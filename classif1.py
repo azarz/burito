@@ -1,3 +1,12 @@
+import multiprocessing as mp
+import os
+import threading
+
+# if __name__ == "__main__":
+#     mp.set_start_method("fork")
+
+print(__name__, 'thread id:', threading.current_thread().ident, 'process id:', os.getpid())
+
 import argparse
 import os
 from pathlib import Path
@@ -13,6 +22,8 @@ import skimage.morphology as morph
 from show_many_images import show_many_images
 from uids_of_paths import uids_of_paths
 from watcher import Watcher
+
+from resample_ds_raster import resample_ds_raster
 
 CATEGORIES= (
    #0        1       2        3        4
@@ -67,7 +78,7 @@ def main(rgb_path, dsm_path, overwrite):
     model_path = "./18-01-25-15-38-19_1078_1.00000000_0.07799472_aracena.hdf5"
     cache_dir = "./.cache/"
 
-    watcher = Watcher();
+    watcher = Watcher()
 
     dir_names = uids_of_paths({
         "ortho": rgb_path,
@@ -82,10 +93,10 @@ def main(rgb_path, dsm_path, overwrite):
     ds.open_raster('dsm', dsm_path)
 
     with watcher("rgb64"):
-        resample_ds_raster(ds, 0.64, "rgba", "rgba64", str(Path(cache_dir) / dir_names[frozenset({'ortho'})] / "rgba64.tif"), overwrite)
+        resample_ds_raster(ds, 0.64, "rgba", "rgba64", str(Path(cache_dir) / dir_names[frozenset({'ortho'})] / "rgba64.tif"), overwrite, "multiprocessing_process")
 
     with watcher("dsm128"):
-        resample_ds_raster(ds, 1.28, "dsm", "dsm128", str(Path(cache_dir) / dir_names[frozenset({'dsm'})] / "dsm128.tif"), overwrite)
+        resample_ds_raster(ds, 1.28, "dsm", "dsm128", str(Path(cache_dir) / dir_names[frozenset({'dsm'})] / "dsm128.tif"), overwrite, "cf_threadpool")
     with watcher("slopes128"):    
         add_slopes_to_ds(ds, "dsm128", "slopes128", str(Path(cache_dir) / dir_names[frozenset({'dsm'})] / "slopes.tif"), overwrite)
 
@@ -96,12 +107,12 @@ def main(rgb_path, dsm_path, overwrite):
         add_roads_poly_to_ds(ds, "roads", str(Path(cache_dir) / dir_names[frozenset({'dsm', "ortho"})] / "roads.shp"), overwrite)
 
     show_many_images(
-        [ds.rgba.get_data(band=-1), ds.slopes128.get_data(), ds.hm.get_data(band=INDEX_WATER + 1), ds.hm.get_data(band=INDEX_VEHICLES + 1)], 
-        extents=[ds.rgba.fp.extent, ds.slopes128.fp.extent, ds.hm.fp.extent, ds.hm.fp.extent],
+        [ds.rgba64.get_data(band=-1), ds.dsm128.get_data(), ds.hm.get_data(band=INDEX_ROADS + 1), ds.hm.get_data(band=INDEX_VEHICLES + 1)], 
+        extents=[ds.rgba.fp.extent, ds.dsm128.fp.extent, ds.hm.fp.extent, ds.hm.fp.extent],
         patchess=[[descartes.PolygonPatch(poly, fill=False, ec='#ff0000', lw=3, ls='--') for poly in ds.roads.iter_data(None)]]
     )
 
-
+"""
 def resample_ds_raster(ds, res, in_key, out_key, cache_path, overwrite):
 
     if os.path.isfile(cache_path) and not overwrite:
@@ -118,7 +129,7 @@ def resample_ds_raster(ds, res, in_key, out_key, cache_path, overwrite):
         out = np.where((out[...,3] == 255)[...,np.newaxis], out, 0)
 
     ds[out_key].set_data(out, band=-1)
-
+"""
 
 def add_slopes_to_ds(ds, in_key, out_key, cache_path, overwrite):
 
