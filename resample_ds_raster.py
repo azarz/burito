@@ -127,10 +127,11 @@ def resample_ds_raster(ds, res, in_key, out_key, cache_path, overwrite, parallel
             results_unsorted = [output.get() for tile in tiles.flat]
             results = []
 
-            for tile in tiles.flat:
-                for res in results_unsorted:
-                    if res[0] == tile:
-                        results.append(res[1])
+            footprint_index = {}
+            for i, tile in enumerate(tiles.flat):
+                footprint_index[repr(tile)] = i
+
+            results = np.asarray(sorted(results_unsorted, key=lambda tuple: footprint_index[repr(tuple[0])]))[:,1]
 
             for i in range(NUM_CORES):
                 input_queue.put(None)
@@ -139,6 +140,8 @@ def resample_ds_raster(ds, res, in_key, out_key, cache_path, overwrite, parallel
                 p.join()
 
         elif parallel_mode == "threading_thread":
+
+            new_watcher = Watcher()
 
             def worker():
                 while True:
@@ -160,12 +163,12 @@ def resample_ds_raster(ds, res, in_key, out_key, cache_path, overwrite, parallel
                 q.put(tile)
 
             results_unsorted = [output.get() for tile in tiles.flat]
-            results = []
 
-            for tile in tiles.flat:
-                for res in results_unsorted:
-                    if res[0] == tile:
-                        results.append(res[1])
+            footprint_index = {}
+            for i, tile in enumerate(tiles.flat):
+                footprint_index[repr(tile)] = i
+
+            results = np.asarray(sorted(results_unsorted, key=lambda tuple: footprint_index[repr(tuple[0])]))[:,1]
 
             # block until all tasks are done
             q.join()
@@ -189,7 +192,6 @@ def resample_tile(tile, ds, key):
     print('thread id:', threading.current_thread().ident, 'process id:', os.getpid())
     src = ds[key]
     out = src.get_data(band=-1, fp=tile)
-    # print('thread id:', threading.current_thread().ident, 'process id:', os.getpid())
 
     if len(src) == 4:
         out = np.where((out[...,3] == 255)[...,np.newaxis], out, 0)
@@ -205,7 +207,6 @@ def resample_tile_thread(tile, ds, key, thread_storage):
 
     else:
         ds = thread_storage.ds
-
     return resample_tile(tile, ds, key)
 
 def resample_tile_queue(tile, ds, key, queue):
@@ -244,10 +245,10 @@ if __name__ == "__main__":
                 # "multiprocessing_process",
                 # "cf_threadpool", 
                 # "cf_threadpool_as_completed", 
-                # "threading_thread",
-                "multiprocessing_threadpool", 
-                "multiprocessing_threadpool_async", 
-                "multiprocessing_threadpool_closure",
+                "threading_thread",
+                # "multiprocessing_threadpool", 
+                # "multiprocessing_threadpool_async", 
+                # "multiprocessing_threadpool_closure",
                 ""]
 
     rgb_path = './ortho_8.00cm.tif'

@@ -93,10 +93,10 @@ def main(rgb_path, dsm_path, overwrite):
     ds.open_raster('dsm', dsm_path)
 
     with watcher("rgb64"):
-        resample_ds_raster(ds, 0.64, "rgba", "rgba64", str(Path(cache_dir) / dir_names[frozenset({'ortho'})] / "rgba64.tif"), overwrite, "multiprocessing_process")
+        resample_ds_raster(ds, 0.64, "rgba", "rgba64", str(Path(cache_dir) / dir_names[frozenset({'ortho'})] / "rgba64.tif"), overwrite, "multiprocessing_map")
 
     with watcher("dsm128"):
-        resample_ds_raster(ds, 1.28, "dsm", "dsm128", str(Path(cache_dir) / dir_names[frozenset({'dsm'})] / "dsm128.tif"), overwrite, "cf_threadpool")
+        resample_ds_raster(ds, 1.28, "dsm", "dsm128", str(Path(cache_dir) / dir_names[frozenset({'dsm'})] / "dsm128.tif"), overwrite, "multiprocessing_map")
     with watcher("slopes128"):    
         add_slopes_to_ds(ds, "dsm128", "slopes128", str(Path(cache_dir) / dir_names[frozenset({'dsm'})] / "slopes.tif"), overwrite)
 
@@ -111,6 +111,7 @@ def main(rgb_path, dsm_path, overwrite):
         extents=[ds.rgba.fp.extent, ds.dsm128.fp.extent, ds.hm.fp.extent, ds.hm.fp.extent],
         patchess=[[descartes.PolygonPatch(poly, fill=False, ec='#ff0000', lw=3, ls='--') for poly in ds.roads.iter_data(None)]]
     )
+
 
 """
 def resample_ds_raster(ds, res, in_key, out_key, cache_path, overwrite):
@@ -133,9 +134,9 @@ def resample_ds_raster(ds, res, in_key, out_key, cache_path, overwrite):
 
 def add_slopes_to_ds(ds, in_key, out_key, cache_path, overwrite):
 
-    if os.path.isfile(cache_path) and not overwrite:
-        ds.open_raster(out_key, cache_path)
-        return
+    # if os.path.isfile(cache_path) and not overwrite:
+    #     ds.open_raster(out_key, cache_path)
+    #     return
 
     src = ds[in_key]
     slopes = get_slopes(src)
