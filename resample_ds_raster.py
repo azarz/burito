@@ -189,7 +189,7 @@ def resample_ds_raster(ds, res, in_key, out_key, cache_path, overwrite, parallel
 
 
 def resample_tile(tile, ds, key):
-    print('thread id:', threading.current_thread().ident, 'process id:', os.getpid())
+    # print('thread id:', threading.current_thread().ident, 'process id:', os.getpid())
     src = ds[key]
     out = src.get_data(band=-1, fp=tile)
 
@@ -245,8 +245,8 @@ if __name__ == "__main__":
                 # "multiprocessing_process",
                 # "cf_threadpool", 
                 # "cf_threadpool_as_completed", 
-                "threading_thread",
-                # "multiprocessing_threadpool", 
+                # "threading_thread",
+                "multiprocessing_threadpool", 
                 # "multiprocessing_threadpool_async", 
                 # "multiprocessing_threadpool_closure",
                 ""]

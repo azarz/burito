@@ -92,6 +92,7 @@ def main(rgb_path, dsm_path, overwrite):
     ds.open_raster('rgba', rgb_path)
     ds.open_raster('dsm', dsm_path)
 
+
     with watcher("rgb64"):
         resample_ds_raster(ds, 0.64, "rgba", "rgba64", str(Path(cache_dir) / dir_names[frozenset({'ortho'})] / "rgba64.tif"), overwrite, "multiprocessing_map")
 
