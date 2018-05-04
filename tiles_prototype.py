@@ -76,7 +76,7 @@ class MultiThreadedRasterResampler(object):
                 started = args[1] in self.dico.keys()
                 file_exists = os.path.isfile(args[1])
 
-                # Starded
+                # started
                 if started:
                     value = self.dico[args[1]]
 
@@ -96,7 +96,7 @@ class MultiThreadedRasterResampler(object):
                             # Should not happen
                             raise RuntimeError("There should be a file")
 
-                # NotStarted
+                # !started
                 else:
                     # fileExists
                     if file_exists:
@@ -226,19 +226,12 @@ class MultiThreadedRasterResampler(object):
 
 
 
-
-
-
-
 def output_fp_to_input_fp(fp, scale, rsize):
     out = buzz.Footprint(tl=fp.tl, size=fp.size, rsize=fp.size/scale)
     padding = (rsize - out.rsizex) / 2
     assert padding == int(padding)
     out = out.dilate(padding)
     return out
-
-
-
 
 
 
@@ -294,13 +287,15 @@ if __name__ == "__main__":
             rgb_results = []
             slopes_results = []
 
-            for tile_index in range(13):
-                rgb_results.append(rgb_resampler.computation_pool.apply_async(rgb_resampler.get_data, (rgba_tiles.flat[tile_index],)))
-                # slopes_results.append(rgb_resampler.computation_pool.apply_async(dsm_resampler.get_data, (dsm_tiles.flat[tile_index],)))
+            pool = mp.pool.ThreadPool()
 
-            for result_index in range(13):
+            for tile_index in range(len(dsm_tiles.flat)):
+                rgb_results.append(pool.apply_async(rgb_resampler.get_data, (rgba_tiles.flat[tile_index],)))
+                slopes_results.append(pool.apply_async(dsm_resampler.get_data, (dsm_tiles.flat[tile_index],)))
+
+            for result_index in range(len(rgb_results)):
                 rgb_results[result_index].get()
-                # slopes_results[result_index].get()
+                slopes_results[result_index].get()
 
 
             # show_many_images(
