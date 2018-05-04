@@ -183,7 +183,6 @@ class MultiThreadedRasterResampler(object):
             if len(src) == 4:
                 out = np.where((out[...,3] == 255)[...,np.newaxis], out, 0)
 
-        print("resample")
         out_proxy = ds.create_araster(tile_path, tile_fp, src.dtype, len(src), driver="GTiff", band_schema={"nodata": src.nodata}, sr=src.wkt_origin)
         out_proxy.set_data(out, band=-1)
         if self.get_slopes:
@@ -295,13 +294,13 @@ if __name__ == "__main__":
             rgb_results = []
             slopes_results = []
 
-            for tile_index in range(1):
-                # rgb_results.append(rgb_resampler.computation_pool.apply_async(rgb_resampler.get_data, (rgba_tiles.flat[tile_index],)))
-                slopes_results.append(rgb_resampler.computation_pool.apply_async(dsm_resampler.get_data, (dsm_tiles.flat[tile_index],)))
+            for tile_index in range(13):
+                rgb_results.append(rgb_resampler.computation_pool.apply_async(rgb_resampler.get_data, (rgba_tiles.flat[tile_index],)))
+                # slopes_results.append(rgb_resampler.computation_pool.apply_async(dsm_resampler.get_data, (dsm_tiles.flat[tile_index],)))
 
-            for result_index in range(1):
-                # rgb_results[result_index].get()
-                slopes_results[result_index].get()
+            for result_index in range(13):
+                rgb_results[result_index].get()
+                # slopes_results[result_index].get()
 
 
             # show_many_images(
