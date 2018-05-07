@@ -237,26 +237,25 @@ class MultiThreadedRasterResampler(object):
 
 
     def get_multi_data(self, fp_iterable):
-        async_results = []
 
         output_pool = mp.pool.ThreadPool()
 
-        for fp in fp_iterable:
-            async_results.append(output_pool.apply_async(self.get_data, (fp,)))
+        def async_result_gen():
+            for fp in fp_iterable:
+                yield output_pool.apply_async(self.get_data, (fp,))
 
-        return async_results
+        return async_result_gen()
 
 
     def get_multi_slopes(self, fp_iterable):
-        async_results = []
 
         output_pool = mp.pool.ThreadPool()
 
-        for fp in fp_iterable:
-            async_results.append(output_pool.apply_async(self.get_slopes, (fp,)))
+        def async_result_gen():
+            for fp in fp_iterable:
+                yield output_pool.apply_async(self.get_slopes, (fp,))
 
-        return async_results
-
+        return async_result_gen()
 
 
 
@@ -325,7 +324,7 @@ if __name__ == "__main__":
 
     def keras_worker():
         while True:
-            inputs = input_q.get()
+            inputs = model_input_q.get()
 
             if inputs == None:
                 prediction_q.put([None])
@@ -355,32 +354,54 @@ if __name__ == "__main__":
                     prediction = src.get_data(band=-1)
 
             prediction_q.put(prediction)
-            input_q.task_done()
+            model_input_q.task_done()
 
 
 
-    input_q = queue.Queue(1)
+    model_input_q = queue.Queue(1)
     prediction_q = queue.Queue(1)
+
+    rgb_results_q = queue.Queue(1)
+    slopes_results_q = queue.Queue(1)
+
+    def resample_results_filler(rgb_results_gen, slopes_results_gen):
+
+        rgb_res = next(rgb_results_gen, None)
+        slope_res = next(slopes_results_gen, None)
+
+        while rgb_res != None:
+            assert slope_res != None
+
+            rgb_results_q.put(rgb_res)
+            slopes_results_q.put(slope_res)
+
+            rgb_res = next(rgb_results_gen, None)
+            slope_res = next(slopes_results_gen, None)
+        
 
     def resampler_worker():
         with MultiThreadedRasterResampler(rgb_path, 0.64, 'ortho', dir_names, cache_dir) as rgb_resampler:
             with MultiThreadedRasterResampler(dsm_path, 1.28, 'dsm', dir_names, cache_dir) as dsm_resampler:
 
-                rgb_results = rgb_resampler.get_multi_data(rgba_tiles.flat)
-                slopes_results = dsm_resampler.get_multi_slopes(dsm_tiles.flat)
+                rgb_results_gen = rgb_resampler.get_multi_data(rgba_tiles.flat)
+                slopes_results_gen = dsm_resampler.get_multi_slopes(dsm_tiles.flat)
 
-                for result_index in range(len(rgb_results)):
-                    inputs = (rgb_results[result_index].get()[...,0:3], slopes_results[result_index].get())
+                filler_thread = threading.Thread(target=resample_results_filler, args=(rgb_results_gen, slopes_results_gen))
+                filler_thread.start()
+
+                for result_index in range(len(rgba_tiles.flat)):
+                    inputs = (rgb_results_q.get().get()[...,0:3], slopes_results_q.get().get())
                     fp = out_tiles.flat[result_index]
 
-                    input_q.put((inputs, fp))
+                    model_input_q.put((inputs, fp))
 
-                input_q.put(None)
+                model_input_q.put(None)
+
 
     print("overhead done!")
 
     keras_thread = threading.Thread(target=keras_worker)
-    keras_thread.start()    
+    keras_thread.start()
 
     resampler_thread = threading.Thread(target=resampler_worker)
     resampler_thread.start()
