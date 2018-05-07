@@ -162,7 +162,6 @@ class MultiThreadedRasterResampler(object):
 
 
     def _resample_tile(self, tile_fp, tile_path):
-        print("resample in")
         if not hasattr(self._thread_storage, "ds"):
             ds = buzz.DataSource(allow_interpolation=True)
             self._thread_storage.ds = ds
@@ -178,7 +177,6 @@ class MultiThreadedRasterResampler(object):
         out_proxy = ds.create_araster(tile_path, tile_fp, src.dtype, len(src), driver="GTiff", band_schema={"nodata": src.nodata}, sr=src.wkt_origin)
         out_proxy.set_data(out, band=-1)
         out_proxy.close()
-        print("resample out")
         return out
 
 
@@ -241,7 +239,7 @@ class MultiThreadedRasterResampler(object):
     def get_multi_data(self, fp_iterable):
         async_results = []
 
-        output_pool = mp.pool.ThreadPool(5)
+        output_pool = mp.pool.ThreadPool()
 
         for fp in fp_iterable:
             async_results.append(output_pool.apply_async(self.get_data, (fp,)))
@@ -271,12 +269,6 @@ def output_fp_to_input_fp(fp, scale, rsize):
     out = out.dilate(padding)
     return out
 
-
-
-
-def multichannel_to_top1(image_array):
-    top1 = np.argmax(image_array, axis=-1)
-    return top1
 
 
 
@@ -380,6 +372,7 @@ if __name__ == "__main__":
                 for result_index in range(len(rgb_results)):
                     inputs = (rgb_results[result_index].get()[...,0:3], slopes_results[result_index].get())
                     fp = out_tiles.flat[result_index]
+
                     input_q.put((inputs, fp))
 
                 input_q.put(None)
@@ -396,10 +389,9 @@ if __name__ == "__main__":
 
     while not np.array_equal(pred, [None]):
         show_many_images(
-            [multichannel_to_top1(pred)], 
+            [np.argmax(pred, axis=-1)], 
             extents=[out_fp.extent]
         )
-        print("get pred   ", prediction_q.qsize())
         pred = prediction_q.get()
 
 
