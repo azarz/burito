@@ -41,7 +41,7 @@ class MultiThreadedRasterResampler(object):
 
         self._lock = threading.Lock()
         self._cv = threading.Condition()
-        self._req_q = queue.Queue(1)
+        self._req_q = queue.Queue(5)
         self._thread_storage = threading.local()
 
         self._computation_pool = mp.pool.ThreadPool()
@@ -64,6 +64,7 @@ class MultiThreadedRasterResampler(object):
             self._num_bands = len(raster)
             self._nodata = raster.nodata
 
+
         self._cache_tile_paths = [
             str(Path(cache_dir) / dir_names[frozenset({rtype})] / str(hashlib.md5(repr(fp).encode()).hexdigest()))
             for fp in self._cache_tiles_fps.flat
@@ -74,7 +75,7 @@ class MultiThreadedRasterResampler(object):
 
     def __exit__(self, type, value, tb):
         self._req_q.put(None)
-        self._dispatcher_thread.join()
+        self._dispatcher_thread.join()    
 
 
     def _callback_dico(self, args, res):
@@ -125,6 +126,7 @@ class MultiThreadedRasterResampler(object):
                         self._io_pool.apply_async(self._get_tile_data, (args[1],), callback=functools.partial(self._callback_dico, args))
                     # !fileExists
                     else:
+                        print("writing_file")
                         # Writing file
                         self._dico[args[1]] = 0
                         self._computation_pool.apply_async(self._resample_tile, args, callback=functools.partial(self._callback_dico, args))
@@ -206,7 +208,10 @@ class MultiThreadedRasterResampler(object):
         for fp, filename in tile_info:
             with self._lock:
                 input_data.append(self._dico[filename])
+                self._dico[filename] = 0
             intersecting_tiles.append(fp)
+
+        print(len(self._dico.values()))
 
         return self._merge_out_tiles(intersecting_tiles, input_data, input_fp)
 
@@ -236,26 +241,65 @@ class MultiThreadedRasterResampler(object):
         return arr
 
 
-    def get_multi_data(self, fp_iterable):
 
-        output_pool = mp.pool.ThreadPool()
+    def _get_multi(self, get_function, fp_iterable):
+
+        out_pool = mp.pool.ThreadPool()
 
         def async_result_gen():
             for fp in fp_iterable:
-                yield output_pool.apply_async(self.get_data, (fp,))
+                yield out_pool.apply_async(get_function, (fp,))
 
         return async_result_gen()
+
+
+    def get_multi_data(self, fp_iterable):
+        return self._get_multi(self.get_data, fp_iterable)
 
 
     def get_multi_slopes(self, fp_iterable):
+        return self._get_multi(self.get_slopes, fp_iterable)
 
-        output_pool = mp.pool.ThreadPool()
 
-        def async_result_gen():
-            for fp in fp_iterable:
-                yield output_pool.apply_async(self.get_slopes, (fp,))
 
-        return async_result_gen()
+
+class HeatmapRaster(object):
+
+    def get_data(self, input_fp):
+
+        ds = buzz.DataSource(allow_interpolation=True)
+
+        input_data = []
+        intersecting_tiles = []
+
+        def tile_info_gen():
+            for cache_tile, filename in zip(self._cache_tiles_fps.flat, self._cache_tile_paths):
+                if cache_tile.share_area(input_fp):
+                    yield cache_tile, filename
+
+        for cache_tile, filepath in tile_info_gen():
+
+            file_exists = os.path.isfile(filepath)
+            
+            if not file_exists:
+
+                rgb = (model_input[0].astype('float32') - 127.5) / 127.5
+                slopes = model_input[1] / 45 - 1
+                prediction = model.predict([rgb[np.newaxis], slopes[np.newaxis]])[0]
+
+                with datasrc.open_araster(rgb_path).close as src:
+                    out_proxy = datasrc.create_araster(filepath, fp, "float32", LABEL_COUNT, driver="GTiff", sr=src.wkt_origin)
+
+                out_proxy.set_data(prediction, band=-1)
+                out_proxy.close()
+
+            else:
+                with datasrc.open_araster(filepath).close as src:
+                    prediction = src.get_data(band=-1)
+
+            prediction_q.put((prediction, fp))
+
+
 
 
 
@@ -322,6 +366,17 @@ if __name__ == "__main__":
 
 
 
+    model_input_q = queue.Queue(5)
+    display_input_q = queue.Queue(5)
+    prediction_q = queue.Queue(5)
+
+    rgb_results_q = queue.Queue(5)
+    slopes_results_q = queue.Queue(5)
+
+
+
+
+
     def keras_worker():
         while True:
             inputs = model_input_q.get()
@@ -353,19 +408,12 @@ if __name__ == "__main__":
                 with datasrc.open_araster(filepath).close as src:
                     prediction = src.get_data(band=-1)
 
-            prediction_q.put(prediction)
+            prediction_q.put((prediction, fp))
             model_input_q.task_done()
 
 
 
-    model_input_q = queue.Queue(1)
-    prediction_q = queue.Queue(1)
-
-    rgb_results_q = queue.Queue(1)
-    slopes_results_q = queue.Queue(1)
-
     def resample_results_filler(rgb_results_gen, slopes_results_gen):
-
         rgb_res = next(rgb_results_gen, None)
         slope_res = next(slopes_results_gen, None)
 
@@ -389,11 +437,13 @@ if __name__ == "__main__":
                 filler_thread = threading.Thread(target=resample_results_filler, args=(rgb_results_gen, slopes_results_gen))
                 filler_thread.start()
 
-                for result_index in range(len(rgba_tiles.flat)):
+                for result_index in range(len(out_tiles.flat)):
                     inputs = (rgb_results_q.get().get()[...,0:3], slopes_results_q.get().get())
                     fp = out_tiles.flat[result_index]
 
                     model_input_q.put((inputs, fp))
+                    display_input_q.put((inputs, fp))
+
 
                 model_input_q.put(None)
 
@@ -406,14 +456,33 @@ if __name__ == "__main__":
     resampler_thread = threading.Thread(target=resampler_worker)
     resampler_thread.start()
 
-    pred = prediction_q.get() 
+    pred = prediction_q.get()
+    model_in = display_input_q.get()[0]
+
+    i = 0
 
     while not np.array_equal(pred, [None]):
+        data = pred[0]
+        fp = pred[1]
+
+        in_rgb_fp = rgba_tiles.flat[i]
+        in_dsm_fp = dsm_tiles.flat[i]
+
+        print(fp.extent)
+        print(in_rgb_fp.extent)
+
+        with datasrc.open_araster(dsm_path).close as dsm:
+            in_dsm_dat = dsm.get_data(band=-1, fp=in_dsm_fp)
+            in_dsm_dat[in_dsm_dat < 0] = 999999
+            in_dsm_dat[in_dsm_dat == 999999] = np.amin(in_dsm_dat)
+
         show_many_images(
-            [np.argmax(pred, axis=-1)], 
-            extents=[out_fp.extent]
+            [model_in[0], in_dsm_dat, model_in[1][:,:,0], np.argmax(data, axis=-1)], 
+            extents=[in_rgb_fp.extent, in_dsm_fp.extent, in_rgb_fp.extent, in_dsm_fp.extent, fp.extent]
         )
         pred = prediction_q.get()
+        model_in = display_input_q.get()[0]
+        i += 1
 
 
     resampler_thread.join()
