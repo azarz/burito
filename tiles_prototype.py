@@ -17,6 +17,7 @@ from show_many_images import show_many_images
 from uids_of_paths import uids_of_paths
 from watcher import Watcher
 
+from DoubleTiledStructure import DoubleTiledStructure
 
 
 CATEGORIES= (
@@ -32,6 +33,15 @@ LABEL_COUNT = len(CATEGORIES)
 for i, cat in enumerate(CATEGORIES):
    globals()['INDEX_' + cat.upper()] = i
    INDEX_OF_LABNAME[cat] = i
+
+
+
+def output_fp_to_input_fp(fp, scale, rsize):
+    out = buzz.Footprint(tl=fp.tl, size=fp.size, rsize=fp.size/scale)
+    padding = (rsize - out.rsizex) / 2
+    assert padding == int(padding)
+    out = out.dilate(padding)
+    return out
 
 
 
@@ -208,7 +218,7 @@ class MultiThreadedRasterResampler(object):
         for fp, filename in tile_info:
             with self._lock:
                 input_data.append(self._dico[filename])
-                self._dico[filename] = 0
+                # del self._dico[filename]
             intersecting_tiles.append(fp)
 
         print(len(self._dico.values()))
@@ -265,6 +275,44 @@ class MultiThreadedRasterResampler(object):
 
 class HeatmapRaster(object):
 
+    def __init__(self, model, scale, out_tiles, dir_names, cache_dir="./.cache"):
+
+        self._scale = scale
+
+        self._model = model
+
+        ds = buzz.DataSource(allow_interpolation=True)
+
+        with ds.open_araster(self._raster_path).close as raster:
+            self._full_fp = raster.fp.intersection(raster.fp, scale=scale, alignment=(0,0))
+            tile_count = np.ceil(self._full_fp.rsize / 500) 
+            self._cache_tiles_fps = self._full_fp.tile_count(*tile_count, boundary_effect='shrink')
+
+        self._computation_tiles = out_tiles
+
+        self._double_tiled_structure = DoubleTiledStructure(self._cache_tiles_fps, out_tiles, self._computation_method)
+
+        self._cache_tile_paths = [
+            str(Path(cache_dir) / dir_names[frozenset({rtype})] / str(hashlib.md5(repr(fp).encode()).hexdigest()))
+            for fp in self._cache_tiles_fps.flat
+        ]
+
+
+    def _computation_method(self, computation_tile):
+
+        rgba_tile = output_fp_to_input_fp(computation_tile, 0.64, self._model.get_layer("rgb").input_shape[1])
+        dsm_tile = output_fp_to_input_fp(computation_tile, 1.28, self._model.get_layer("slopes").input_shape[1])
+
+        model_input = (rgba_resampler.get_data(rgba_tile), dsm_resampler.get_slopes(dsm_tile))
+
+        rgb = (model_input[0].astype('float32') - 127.5) / 127.5
+        slopes = model_input[1] / 45 - 1
+        prediction = model.predict([rgb[np.newaxis], slopes[np.newaxis]])[0]
+
+        return prediction
+
+
+
     def get_data(self, input_fp):
 
         ds = buzz.DataSource(allow_interpolation=True)
@@ -282,10 +330,7 @@ class HeatmapRaster(object):
             file_exists = os.path.isfile(filepath)
             
             if not file_exists:
-
-                rgb = (model_input[0].astype('float32') - 127.5) / 127.5
-                slopes = model_input[1] / 45 - 1
-                prediction = model.predict([rgb[np.newaxis], slopes[np.newaxis]])[0]
+                prediction = self._double_tiled_structure.compute_cache_tile(cache_tile)
 
                 with datasrc.open_araster(rgb_path).close as src:
                     out_proxy = datasrc.create_araster(filepath, fp, "float32", LABEL_COUNT, driver="GTiff", sr=src.wkt_origin)
@@ -299,18 +344,6 @@ class HeatmapRaster(object):
 
             prediction_q.put((prediction, fp))
 
-
-
-
-
-
-
-def output_fp_to_input_fp(fp, scale, rsize):
-    out = buzz.Footprint(tl=fp.tl, size=fp.size, rsize=fp.size/scale)
-    padding = (rsize - out.rsizex) / 2
-    assert padding == int(padding)
-    out = out.dilate(padding)
-    return out
 
 
 
@@ -365,7 +398,6 @@ if __name__ == "__main__":
 
 
 
-
     model_input_q = queue.Queue(5)
     display_input_q = queue.Queue(5)
     prediction_q = queue.Queue(5)
@@ -375,9 +407,9 @@ if __name__ == "__main__":
 
 
 
-
-
     def keras_worker():
+        hmRaster = HeatmapRaster()
+
         while True:
             inputs = model_input_q.get()
 

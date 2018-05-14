@@ -1,3 +1,5 @@
+import numpy as np
+
 class DoubleTiledStructure(object):
 
     def __init__(self, cache_tiles, computation_tiles, computation_method):
@@ -7,11 +9,14 @@ class DoubleTiledStructure(object):
         self._to_compute_dict = {}
         self._computed_dict = {}
 
+        self._computed_data = {}
+
         self._cache_tiles = cache_tiles
         self._computation_tiles = computation_tiles
 
         for cache_tile in self._cache_tiles:
             intersect_list = []
+
             for computation_tile in self._computation_tiles:
                 if cache_tile.share_area(computation_tile):
                     intersect_list.append(computation_tile)
@@ -21,11 +26,11 @@ class DoubleTiledStructure(object):
 
 
 
-    def _remember(self, cache_tile, computation_tile):
+    def _remember(self, cache_tile_hash, computation_tile):
 
-        if computation_tile in self._to_compute_dict[cache_tile]:
-            self._computed_dict[cache_tile].add(computation_tile)
-            self._to_compute_dict[cache_tile].remove(computation_tile)
+        if computation_tile in self._to_compute_dict[cache_tile_hash]:
+            self._computed_dict[cache_tile_hash].add(computation_tile)
+            self._to_compute_dict[cache_tile_hash].remove(computation_tile)
 
 
 
@@ -39,9 +44,9 @@ class DoubleTiledStructure(object):
 
         assert cache_tile in self._cache_tiles
 
-        out = np.empty(tuple(cache_tile.shape), dtype="float32")
+        out = np.empty(tuple(cache_tile.shape) + (13,), dtype="float32")
 
-        for computation_tile in self._to_compute_dict[cache_tile]:
+        for computation_tile in self._to_compute_dict[cache_tile].copy():
             self._compute_tile(computation_tile)
 
         for computation_tile in self._computed_dict[cache_tile]:
