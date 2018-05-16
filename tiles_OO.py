@@ -47,21 +47,18 @@ def output_fp_to_input_fp(fp, scale, rsize):
 
 class AbstractRaster(object):
 
+    def __init__(self, scale):
+        self._scale = scale        
+
     def _merge_out_tiles(self, tiles, data, out_fp):
-        if self._num_bands == LABEL_COUNT:
-            out = np.empty(tuple(out_fp.shape) + (self._num_bands,), dtype="float32")
-        elif self._num_bands > 1:
-            out = np.empty(tuple(out_fp.shape) + (self._num_bands,), dtype="uint8")
-        else:
-            out = np.empty(tuple(out_fp.shape), dtype="float32")
+        return None
 
-        for tile, dat  in zip(tiles, data):
-            out[tile.slice_in(out_fp, clip=True)] = dat[out_fp.slice_in(tile, clip=True)]
-        return out
+    def get_data(self, input_fp):
+        return None
 
 
 
-class RasterResampler(AbstractRaster):
+class ResamplableRaster(AbstractRaster):
 
     def __init__(self, path, scale, rtype, dir_names, cache_dir="./.cache"):
 
@@ -196,13 +193,6 @@ class RasterResampler(AbstractRaster):
         return out
 
 
-    def _merge_out_tiles(self, tiles, data, out_fp):
-
-        out = np.empty(tuple(out_fp.shape) + (self._num_bands,), dtype="uint8")
-
-        for tile, dat  in zip(tiles, data):
-            out[tile.slice_in(out_fp, clip=True)] = dat[out_fp.slice_in(tile, clip=True)]
-        return out
 
 
     def get_data(self, input_fp):
@@ -237,6 +227,7 @@ class RasterResampler(AbstractRaster):
         print(len(self._dico.values()))
 
         return self._merge_out_tiles(intersecting_tiles, input_data, input_fp)
+        
 
     def _get_multi(self, get_function, fp_iterable):
 
@@ -256,7 +247,30 @@ class RasterResampler(AbstractRaster):
 
 
 
-class DSMResampler(RasterResampler):
+
+class ResamplableOrthoimage(ResamplableRaster):
+    
+    def __init__(self, path, scale, dir_names, cache_dir="./.cache"):
+        super().__init__(path, scale, "ortho", dir_names, cache_dir)
+
+
+    def _merge_out_tiles(self, tiles, data, out_fp):
+
+        out = np.empty(tuple(out_fp.shape) + (self._num_bands,), dtype="uint8")
+
+        for tile, dat  in zip(tiles, data):
+            out[tile.slice_in(out_fp, clip=True)] = dat[out_fp.slice_in(tile, clip=True)]
+        return out
+
+
+
+
+
+
+
+
+
+class ResamplableDSM(ResamplableRaster):
     
     def __init__(self, path, scale, dir_names, cache_dir="./.cache"):
         super().__init__(path, scale, "dsm", dir_names, cache_dir)
@@ -300,6 +314,7 @@ class DSMResampler(RasterResampler):
 
 
 
+
 class HeatmapRaster(AbstractRaster):
 
     def __init__(self, model, scale, full_fp, rgb_path, dsm_path, dir_names, cache_dir="./.cache"):
@@ -312,14 +327,12 @@ class HeatmapRaster(AbstractRaster):
         self._rgb_path = rgb_path
         self._dsm_path = dsm_path
 
-        out_tiles = out_fp.tile(np.asarray(model.outputs[0].shape[1:3]).T)
+        self._full_fp = full_fp
 
-        ds = buzz.DataSource(allow_interpolation=True)
-
-        with ds.open_araster(rgb_path).close as raster:
-            self._full_fp = raster.fp.intersection(raster.fp, scale=scale, alignment=(0,0))
-            tile_count = np.ceil(self._full_fp.rsize / 500) 
-            self._cache_tiles_fps = self._full_fp.tile_count(*tile_count, boundary_effect='shrink')
+        out_tiles = self._full_fp.tile(np.asarray(model.outputs[0].shape[1:3]).T)
+        
+        tile_count = np.ceil(self._full_fp.rsize / 500) 
+        self._cache_tiles_fps = self._full_fp.tile_count(*tile_count, boundary_effect='shrink')
 
         self._computation_tiles = out_tiles
 
@@ -336,8 +349,8 @@ class HeatmapRaster(AbstractRaster):
         rgba_tile = output_fp_to_input_fp(computation_tile, 0.64, self._model.get_layer("rgb").input_shape[1])
         dsm_tile = output_fp_to_input_fp(computation_tile, 1.28, self._model.get_layer("slopes").input_shape[1])
 
-        with RasterResampler(self._rgb_path, 0.64, 'ortho', dir_names, cache_dir) as rgba_resampler:
-            with DSMResampler(self._dsm_path, 1.28, dir_names, cache_dir) as dsm_resampler:
+        with ResamplableOrthoimage(self._rgb_path, 0.64, dir_names, cache_dir) as rgba_resampler:
+            with ResamplableDSM(self._dsm_path, 1.28, dir_names, cache_dir) as dsm_resampler:
 
                 model_input = (rgba_resampler.get_data(rgba_tile)[...,0:3], dsm_resampler.get_slopes(dsm_tile))
 
