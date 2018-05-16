@@ -19,7 +19,6 @@ class DoubleTiledStructure(object):
         for cache_tile in self._cache_tiles:
             for computation_tile in self._computation_tiles:
                 if cache_tile.share_area(computation_tile):
-
                     self._to_compute_dict[cache_tile].add(computation_tile)
 
 

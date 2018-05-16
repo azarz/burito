@@ -62,8 +62,6 @@ class AbstractRaster(object):
         return self._full_fp
     
 
-
-
 class ResampledRaster(AbstractRaster):
 
     def __init__(self, path, scale, rtype, dir_names, cache_dir="./.cache"):
@@ -270,8 +268,25 @@ class ResampledDSM(ResampledRaster):
     def __init__(self, path, scale, dir_names, cache_dir="./.cache"):
         super().__init__(path, scale, "dsm", dir_names, cache_dir)
 
-    def get_slopes(self, fp):
-        arr = self.get_data(fp.dilate(1))
+    def _merge_out_tiles(self, tiles, data, out_fp):
+        out = np.empty(tuple(out_fp.shape), dtype="float32")
+
+        for tile, dat  in zip(tiles, data):
+            assert tile.same_grid(out_fp)
+            out[tile.slice_in(out_fp, clip=True)] = dat[out_fp.slice_in(tile, clip=True)]
+        return out
+
+
+
+
+class Slopes(AbstractRaster):
+    def __init__(self, abstract_dsm):
+        self._full_fp = abstract_dsm.fp
+        self._parent_dsm = abstract_dsm
+
+
+    def get_data(self, input_fp):
+        arr = self._parent_dsm.get_data(input_fp.dilate(1))
         nodata_mask = arr == self._nodata
         nodata_mask = ndi.binary_dilation(nodata_mask)
         kernel = [
@@ -293,20 +308,6 @@ class ResampledDSM(ResampledRaster):
 
         arr = np.dstack([arrd, arru])
         return arr
-
-
-    def get_multi_slopes(self, fp_iterable):
-        return self._get_multi(self.get_slopes, fp_iterable)
-
-
-    def _merge_out_tiles(self, tiles, data, out_fp):
-        out = np.empty(tuple(out_fp.shape), dtype="float32")
-
-        for tile, dat  in zip(tiles, data):
-            assert tile.same_grid(out_fp)
-            out[tile.slice_in(out_fp, clip=True)] = dat[out_fp.slice_in(tile, clip=True)]
-        return out
-
 
 
 
