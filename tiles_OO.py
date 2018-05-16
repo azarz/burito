@@ -61,7 +61,7 @@ class AbstractRaster(object):
 
 
 
-class MultiThreadedRasterResampler(AbstractRaster):
+class RasterResampler(AbstractRaster):
 
     def __init__(self, path, scale, rtype, dir_names, cache_dir="./.cache"):
 
@@ -196,6 +196,15 @@ class MultiThreadedRasterResampler(AbstractRaster):
         return out
 
 
+    def _merge_out_tiles(self, tiles, data, out_fp):
+
+        out = np.empty(tuple(out_fp.shape) + (self._num_bands,), dtype="uint8")
+
+        for tile, dat  in zip(tiles, data):
+            out[tile.slice_in(out_fp, clip=True)] = dat[out_fp.slice_in(tile, clip=True)]
+        return out
+
+
     def get_data(self, input_fp):
         if not hasattr(self._thread_storage, "ds"):
             ds = buzz.DataSource(allow_interpolation=True)
@@ -229,6 +238,28 @@ class MultiThreadedRasterResampler(AbstractRaster):
 
         return self._merge_out_tiles(intersecting_tiles, input_data, input_fp)
 
+    def _get_multi(self, get_function, fp_iterable):
+
+        out_pool = mp.pool.ThreadPool()
+
+        def async_result_gen():
+            for fp in fp_iterable:
+                yield out_pool.apply_async(get_function, (fp,))
+
+        return async_result_gen()
+
+
+    def get_multi_data(self, fp_iterable):
+        return self._get_multi(self.get_data, fp_iterable)
+
+
+
+
+
+class DSMResampler(RasterResampler):
+    
+    def __init__(self, path, scale, dir_names, cache_dir="./.cache"):
+        super().__init__(path, scale, "dsm", dir_names, cache_dir)
 
     def get_slopes(self, fp):
         arr = self.get_data(fp.dilate(1))
@@ -255,24 +286,16 @@ class MultiThreadedRasterResampler(AbstractRaster):
         return arr
 
 
-
-    def _get_multi(self, get_function, fp_iterable):
-
-        out_pool = mp.pool.ThreadPool()
-
-        def async_result_gen():
-            for fp in fp_iterable:
-                yield out_pool.apply_async(get_function, (fp,))
-
-        return async_result_gen()
-
-
-    def get_multi_data(self, fp_iterable):
-        return self._get_multi(self.get_data, fp_iterable)
-
-
     def get_multi_slopes(self, fp_iterable):
         return self._get_multi(self.get_slopes, fp_iterable)
+
+
+    def _merge_out_tiles(self, tiles, data, out_fp):
+        out = np.empty(tuple(out_fp.shape), dtype="float32")
+
+        for tile, dat  in zip(tiles, data):
+            out[tile.slice_in(out_fp, clip=True)] = dat[out_fp.slice_in(tile, clip=True)]
+        return out
 
 
 
@@ -313,8 +336,8 @@ class HeatmapRaster(AbstractRaster):
         rgba_tile = output_fp_to_input_fp(computation_tile, 0.64, self._model.get_layer("rgb").input_shape[1])
         dsm_tile = output_fp_to_input_fp(computation_tile, 1.28, self._model.get_layer("slopes").input_shape[1])
 
-        with MultiThreadedRasterResampler(self._rgb_path, 0.64, 'ortho', dir_names, cache_dir) as rgba_resampler:
-            with MultiThreadedRasterResampler(self._dsm_path, 1.28, 'dsm', dir_names, cache_dir) as dsm_resampler:
+        with RasterResampler(self._rgb_path, 0.64, 'ortho', dir_names, cache_dir) as rgba_resampler:
+            with DSMResampler(self._dsm_path, 1.28, dir_names, cache_dir) as dsm_resampler:
 
                 model_input = (rgba_resampler.get_data(rgba_tile)[...,0:3], dsm_resampler.get_slopes(dsm_tile))
 
@@ -323,6 +346,16 @@ class HeatmapRaster(AbstractRaster):
         prediction = model.predict([rgb[np.newaxis], slopes[np.newaxis]])[0]
 
         return prediction
+
+
+
+    def _merge_out_tiles(self, tiles, data, out_fp):
+
+        out = np.empty(tuple(out_fp.shape) + (self._num_bands,), dtype="float32")
+
+        for tile, dat  in zip(tiles, data):
+            out[tile.slice_in(out_fp, clip=True)] = dat[out_fp.slice_in(tile, clip=True)]
+        return out
 
 
 
