@@ -77,6 +77,7 @@ class ResampledRaster(AbstractRaster):
         self._io_pool = mp.pool.ThreadPool()
 
         self._dispatcher_thread = threading.Thread(target=self._dispatcher)
+        self._dispatcher_thread.daemon = True
         self._dispatcher_thread.start()
 
         self._dico = {}
@@ -98,12 +99,6 @@ class ResampledRaster(AbstractRaster):
             for fp in self._cache_tiles_fps.flat
         ]
 
-    def __enter__(self):
-        return self
-
-    def __exit__(self, type, value, tb):
-        self._req_q.put(None)
-        self._dispatcher_thread.join()    
 
 
     def _callback_dico(self, args, res):
@@ -116,9 +111,6 @@ class ResampledRaster(AbstractRaster):
     def _dispatcher(self):
         while True:
             args = self._req_q.get()
-            # Stopping the thread
-            if args == None:
-                return
 
             with self._lock:
                 met = args[1] in self._dico.keys()
@@ -384,6 +376,8 @@ class HeatmapRaster(AbstractRaster):
         output_data = []
         intersecting_tiles = []
 
+        ds = buzz.DataSource(allow_interpolation=True)
+
         def tile_info_gen():
             for cache_tile, filename in zip(self._cache_tiles_fps.flat, self._cache_tile_paths):
                 if cache_tile.share_area(input_fp):
@@ -396,14 +390,14 @@ class HeatmapRaster(AbstractRaster):
             if not file_exists:
                 prediction = self._double_tiled_structure.compute_cache_data(cache_tile)
 
-                with datasrc.open_araster(rgb_path).close as src:
-                    out_proxy = datasrc.create_araster(filepath, cache_tile, "float32", LABEL_COUNT, driver="GTiff", sr=src.wkt_origin)
+                with ds.open_araster(rgb_path).close as src:
+                    out_proxy = ds.create_araster(filepath, cache_tile, "float32", LABEL_COUNT, driver="GTiff", sr=src.wkt_origin)
 
                 out_proxy.set_data(prediction, band=-1)
                 out_proxy.close()
 
             else:
-                with datasrc.open_araster(filepath).close as src:
+                with ds.open_araster(filepath).close as src:
                     prediction = src.get_data(band=-1)
 
             intersecting_tiles.append(cache_tile)
@@ -416,7 +410,8 @@ class HeatmapRaster(AbstractRaster):
 
 
 
-if __name__ == "__main__":
+
+def main():
     print("hello")
 
     rgb_path = "./ortho_8.00cm.tif"
@@ -481,5 +476,6 @@ if __name__ == "__main__":
         extents=[ini_rgb_fp.extent, ini_dsm_fp.extent, display_fp.extent, dsm_disp_fp.extent, dsm_disp_fp.extent, display_fp.extent]
     )
 
-    resampled_rgba.__exit__(None, None, None)
-    resampled_dsm.__exit__(None, None, None)
+
+if __name__ == "__main__":
+    main()
