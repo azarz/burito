@@ -48,7 +48,9 @@ def output_fp_to_input_fp(fp, scale, rsize):
 class AbstractRaster(object):
 
     def _merge_out_tiles(self, tiles, data, out_fp):
-        if self._num_bands > 1:
+        if self._num_bands == LABEL_COUNT:
+            out = np.empty(tuple(out_fp.shape) + (self._num_bands,), dtype="float32")
+        elif self._num_bands > 1:
             out = np.empty(tuple(out_fp.shape) + (self._num_bands,), dtype="uint8")
         else:
             out = np.empty(tuple(out_fp.shape), dtype="float32")
@@ -315,7 +317,6 @@ class HeatmapRaster(AbstractRaster):
             with MultiThreadedRasterResampler(self._dsm_path, 1.28, 'dsm', dir_names, cache_dir) as dsm_resampler:
 
                 model_input = (rgba_resampler.get_data(rgba_tile)[...,0:3], dsm_resampler.get_slopes(dsm_tile))
-
 
         rgb = (model_input[0].astype('float32') - 127.5) / 127.5
         slopes = model_input[1] / 45 - 1
