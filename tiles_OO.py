@@ -45,7 +45,21 @@ def output_fp_to_input_fp(fp, scale, rsize):
 
 
 
-class MultiThreadedRasterResampler(object):
+class AbstractRaster(object):
+
+    def _merge_out_tiles(self, tiles, data, out_fp):
+        if self._num_bands > 1:
+            out = np.empty(tuple(out_fp.shape) + (self._num_bands,), dtype="uint8")
+        else:
+            out = np.empty(tuple(out_fp.shape), dtype="float32")
+
+        for tile, dat  in zip(tiles, data):
+            out[tile.slice_in(out_fp, clip=True)] = dat[out_fp.slice_in(tile, clip=True)]
+        return out
+
+
+
+class MultiThreadedRasterResampler(AbstractRaster):
 
     def __init__(self, path, scale, rtype, dir_names, cache_dir="./.cache"):
 
@@ -161,18 +175,6 @@ class MultiThreadedRasterResampler(object):
             out = raster.get_data(band=-1)
         return out
 
-
-    def _merge_out_tiles(self, tiles, data, out_fp):
-        if self._num_bands > 1:
-            out = np.empty(tuple(out_fp.shape) + (self._num_bands,), dtype="uint8")
-        else:
-            out = np.empty(tuple(out_fp.shape), dtype="float32")
-
-        for tile, dat  in zip(tiles, data):
-            out[tile.slice_in(out_fp, clip=True)] = dat[out_fp.slice_in(tile, clip=True)]
-        return out
-
-
     def _resample_tile(self, tile_fp, tile_path):
         if not hasattr(self._thread_storage, "ds"):
             ds = buzz.DataSource(allow_interpolation=True)
@@ -273,13 +275,19 @@ class MultiThreadedRasterResampler(object):
 
 
 
-class HeatmapRaster(object):
+class HeatmapRaster(AbstractRaster):
 
-    def __init__(self, model, scale, out_tiles, dir_names, cache_dir="./.cache"):
+    def __init__(self, model, scale, full_fp, rgb_path, dsm_path, dir_names, cache_dir="./.cache"):
 
         self._scale = scale
 
         self._model = model
+        self._num_bands = LABEL_COUNT
+
+        self._rgb_path = rgb_path
+        self._dsm_path = dsm_path
+
+        out_tiles = out_fp.tile(np.asarray(model.outputs[0].shape[1:3]).T)
 
         ds = buzz.DataSource(allow_interpolation=True)
 
@@ -303,8 +311,8 @@ class HeatmapRaster(object):
         rgba_tile = output_fp_to_input_fp(computation_tile, 0.64, self._model.get_layer("rgb").input_shape[1])
         dsm_tile = output_fp_to_input_fp(computation_tile, 1.28, self._model.get_layer("slopes").input_shape[1])
 
-        with MultiThreadedRasterResampler(rgb_path, 0.64, 'ortho', dir_names, cache_dir) as rgba_resampler:
-            with MultiThreadedRasterResampler(dsm_path, 1.28, 'dsm', dir_names, cache_dir) as dsm_resampler:
+        with MultiThreadedRasterResampler(self._rgb_path, 0.64, 'ortho', dir_names, cache_dir) as rgba_resampler:
+            with MultiThreadedRasterResampler(self._dsm_path, 1.28, 'dsm', dir_names, cache_dir) as dsm_resampler:
 
                 model_input = (rgba_resampler.get_data(rgba_tile)[...,0:3], dsm_resampler.get_slopes(dsm_tile))
 
@@ -346,6 +354,11 @@ class HeatmapRaster(object):
                 with datasrc.open_araster(filepath).close as src:
                     prediction = src.get_data(band=-1)
 
+            intersecting_tiles.append(cache_tile)
+            input_data.append(prediction)
+
+        return self._merge_out_tiles(intersecting_tiles, input_data, input_fp)
+
 
 
 
@@ -386,8 +399,11 @@ if __name__ == "__main__":
 
     out_fp = out_fp.intersection(out_fp, scale=0.64)
 
-    out_tiles = out_fp.tile(np.asarray(model.outputs[0].shape[1:3]).T)
+    hmr = HeatmapRaster(model, 0.64, out_fp, rgb_path, dsm_path, dir_names)
+    
+    data = hmr.get_data(out_fp)
 
-
-    hmr = HeatmapRaster(model, 0.64, out_tiles, dir_names)
-    hmr.get_data(out_tiles.flat[0])
+    show_many_images(
+        [np.argmax(data, axis=-1)], 
+        extents=[out_fp.extent]
+    )
