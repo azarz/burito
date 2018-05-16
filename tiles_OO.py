@@ -12,6 +12,7 @@ from keras.models import load_model
 import buzzard as buzz
 import scipy.ndimage as ndi
 import numpy as np
+import shapely.geometry as sg
 
 from show_many_images import show_many_images
 from uids_of_paths import uids_of_paths
@@ -227,7 +228,7 @@ class ResamplableRaster(AbstractRaster):
         print(len(self._dico.values()))
 
         return self._merge_out_tiles(intersecting_tiles, input_data, input_fp)
-        
+
 
     def _get_multi(self, get_function, fp_iterable):
 
@@ -259,6 +260,7 @@ class ResamplableOrthoimage(ResamplableRaster):
         out = np.empty(tuple(out_fp.shape) + (self._num_bands,), dtype="uint8")
 
         for tile, dat  in zip(tiles, data):
+            assert tile.same_grid(out_fp)
             out[tile.slice_in(out_fp, clip=True)] = dat[out_fp.slice_in(tile, clip=True)]
         return out
 
@@ -308,6 +310,7 @@ class ResamplableDSM(ResamplableRaster):
         out = np.empty(tuple(out_fp.shape), dtype="float32")
 
         for tile, dat  in zip(tiles, data):
+            assert tile.same_grid(out_fp)
             out[tile.slice_in(out_fp, clip=True)] = dat[out_fp.slice_in(tile, clip=True)]
         return out
 
@@ -317,7 +320,7 @@ class ResamplableDSM(ResamplableRaster):
 
 class HeatmapRaster(AbstractRaster):
 
-    def __init__(self, model, scale, full_fp, rgb_path, dsm_path, dir_names, cache_dir="./.cache"):
+    def __init__(self, model, scale, rgb_path, dsm_path, dir_names, cache_dir="./.cache"):
 
         self._scale = scale
 
@@ -327,7 +330,8 @@ class HeatmapRaster(AbstractRaster):
         self._rgb_path = rgb_path
         self._dsm_path = dsm_path
 
-        self._full_fp = full_fp
+        with ds.open_araster(self._rgb_path).close as rgba:
+            self._full_fp = rgba.fp
 
         out_tiles = self._full_fp.tile(np.asarray(model.outputs[0].shape[1:3]).T)
         
@@ -367,6 +371,7 @@ class HeatmapRaster(AbstractRaster):
         out = np.empty(tuple(out_fp.shape) + (self._num_bands,), dtype="float32")
 
         for tile, dat  in zip(tiles, data):
+            assert tile.same_grid(out_fp)
             out[tile.slice_in(out_fp, clip=True)] = dat[out_fp.slice_in(tile, clip=True)]
         return out
 
@@ -437,6 +442,7 @@ if __name__ == "__main__":
     datasrc = buzz.DataSource(allow_interpolation=True)
 
     print("model...")
+
     model = load_model(model_path)
     model._make_predict_function()
 
@@ -446,11 +452,14 @@ if __name__ == "__main__":
 
     out_fp = out_fp.intersection(out_fp, scale=0.64)
 
-    hmr = HeatmapRaster(model, 0.64, out_fp, rgb_path, dsm_path, dir_names)
+    hmr = HeatmapRaster(model, 0.64, rgb_path, dsm_path, dir_names)
+
+    display_fp = out_fp.intersection(sg.Point(348264,50978)).dilate(200)
+    print(display_fp, out_fp)
     
-    data = hmr.get_data(out_fp)
+    data = hmr.get_data(display_fp)
 
     show_many_images(
         [np.argmax(data, axis=-1)], 
-        extents=[out_fp.extent]
+        extents=[display_fp.extent]
     )
