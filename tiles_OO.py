@@ -48,8 +48,8 @@ def output_fp_to_input_fp(fp, scale, rsize):
 
 class AbstractRaster(object):
 
-    def __init__(self, scale):
-        self._scale = scale        
+    def __init__(self, full_fp):
+        self._full_fp = full_fp
 
     def _merge_out_tiles(self, tiles, data, out_fp):
         return None
@@ -57,9 +57,14 @@ class AbstractRaster(object):
     def get_data(self, input_fp):
         return None
 
+    @property
+    def fp(self):
+        return self._full_fp
+    
 
 
-class ResamplableRaster(AbstractRaster):
+
+class ResampledRaster(AbstractRaster):
 
     def __init__(self, path, scale, rtype, dir_names, cache_dir="./.cache"):
 
@@ -77,7 +82,6 @@ class ResamplableRaster(AbstractRaster):
         self._dico = {}
 
         self._raster_path = path
-        self._scale = scale
 
         ds = buzz.DataSource(allow_interpolation=True)
 
@@ -225,8 +229,6 @@ class ResamplableRaster(AbstractRaster):
                 # del self._dico[filename]
             intersecting_tiles.append(fp)
 
-        print(len(self._dico.values()))
-
         return self._merge_out_tiles(intersecting_tiles, input_data, input_fp)
 
 
@@ -249,7 +251,7 @@ class ResamplableRaster(AbstractRaster):
 
 
 
-class ResamplableOrthoimage(ResamplableRaster):
+class ResampledOrthoimage(ResampledRaster):
     
     def __init__(self, path, scale, dir_names, cache_dir="./.cache"):
         super().__init__(path, scale, "ortho", dir_names, cache_dir)
@@ -272,7 +274,7 @@ class ResamplableOrthoimage(ResamplableRaster):
 
 
 
-class ResamplableDSM(ResamplableRaster):
+class ResampledDSM(ResampledRaster):
     
     def __init__(self, path, scale, dir_names, cache_dir="./.cache"):
         super().__init__(path, scale, "dsm", dir_names, cache_dir)
@@ -320,27 +322,27 @@ class ResamplableDSM(ResamplableRaster):
 
 class HeatmapRaster(AbstractRaster):
 
-    def __init__(self, model, scale, rgb_path, dsm_path, dir_names, cache_dir="./.cache"):
-
-        self._scale = scale
+    def __init__(self, model, resampled_rgba, resampled_dsm, dir_names, cache_dir="./.cache"):
 
         self._model = model
         self._num_bands = LABEL_COUNT
 
-        self._rgb_path = rgb_path
-        self._dsm_path = dsm_path
+        self._resampled_rgba = resampled_rgba
+        self._resampled_dsm = resampled_dsm
 
-        with ds.open_araster(self._rgb_path).close as rgba:
-            self._full_fp = rgba.fp
+        max_scale = max(resampled_rgba.fp.scale[0], resampled_dsm.fp.scale[0])
+        min_scale = min(resampled_rgba.fp.scale[0], resampled_dsm.fp.scale[0])
+      
+        self._full_fp = resampled_rgba.fp.intersection(resampled_dsm.fp, scale=max_scale, alignment=(0,0))
 
-        out_tiles = self._full_fp.tile(np.asarray(model.outputs[0].shape[1:3]).T)
-        
+        self._full_fp = self._full_fp.intersection(self._full_fp, scale=min_scale)
+
+        self._computation_tiles = self._full_fp.tile(np.asarray(model.outputs[0].shape[1:3]).T)
+
         tile_count = np.ceil(self._full_fp.rsize / 500) 
         self._cache_tiles_fps = self._full_fp.tile_count(*tile_count, boundary_effect='shrink')
 
-        self._computation_tiles = out_tiles
-
-        self._double_tiled_structure = DoubleTiledStructure(list(self._cache_tiles_fps.flat), list(out_tiles.flat), self._computation_method)
+        self._double_tiled_structure = DoubleTiledStructure(list(self._cache_tiles_fps.flat), list(self._computation_tiles.flat), self._computation_method)
 
         self._cache_tile_paths = [
             str(Path(cache_dir) / dir_names[frozenset({'dsm', "ortho"})] / str(hashlib.md5(repr(fp).encode()).hexdigest()))
@@ -353,10 +355,7 @@ class HeatmapRaster(AbstractRaster):
         rgba_tile = output_fp_to_input_fp(computation_tile, 0.64, self._model.get_layer("rgb").input_shape[1])
         dsm_tile = output_fp_to_input_fp(computation_tile, 1.28, self._model.get_layer("slopes").input_shape[1])
 
-        with ResamplableOrthoimage(self._rgb_path, 0.64, dir_names, cache_dir) as rgba_resampler:
-            with ResamplableDSM(self._dsm_path, 1.28, dir_names, cache_dir) as dsm_resampler:
-
-                model_input = (rgba_resampler.get_data(rgba_tile)[...,0:3], dsm_resampler.get_slopes(dsm_tile))
+        model_input = (self._resampled_rgba.get_data(rgba_tile)[...,0:3], self._resampled_dsm.get_slopes(dsm_tile))
 
         rgb = (model_input[0].astype('float32') - 127.5) / 127.5
         slopes = model_input[1] / 45 - 1
@@ -379,9 +378,7 @@ class HeatmapRaster(AbstractRaster):
 
     def get_data(self, input_fp):
 
-        ds = buzz.DataSource(allow_interpolation=True)
-
-        input_data = []
+        output_data = []
         intersecting_tiles = []
 
         def tile_info_gen():
@@ -407,9 +404,9 @@ class HeatmapRaster(AbstractRaster):
                     prediction = src.get_data(band=-1)
 
             intersecting_tiles.append(cache_tile)
-            input_data.append(prediction)
+            output_data.append(prediction)
 
-        return self._merge_out_tiles(intersecting_tiles, input_data, input_fp)
+        return self._merge_out_tiles(intersecting_tiles, output_data, input_fp)
 
 
 
@@ -452,14 +449,19 @@ if __name__ == "__main__":
 
     out_fp = out_fp.intersection(out_fp, scale=0.64)
 
-    hmr = HeatmapRaster(model, 0.64, rgb_path, dsm_path, dir_names)
+    resampled_rgba = ResampledOrthoimage(rgb_path, 0.64, dir_names, cache_dir)
+    resampled_dsm = ResampledDSM(dsm_path, 1.28, dir_names, cache_dir)
+
+    hmr = HeatmapRaster(model, resampled_rgba, resampled_dsm, dir_names)
 
     display_fp = out_fp.intersection(sg.Point(348264,50978)).dilate(200)
-    print(display_fp, out_fp)
-    
+ 
     data = hmr.get_data(display_fp)
 
     show_many_images(
         [np.argmax(data, axis=-1)], 
         extents=[display_fp.extent]
     )
+
+    resampled_rgba.__exit__(None, None, None)
+    resampled_dsm.__exit__(None, None, None)

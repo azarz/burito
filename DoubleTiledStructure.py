@@ -1,3 +1,5 @@
+from collections import defaultdict
+
 import numpy as np
 
 class DoubleTiledStructure(object):
@@ -6,8 +8,9 @@ class DoubleTiledStructure(object):
 
         self._computation_method = computation_method
 
-        self._to_compute_dict = {}
-        self._computed_dict = {}
+        #collections.defaultdict (parametre set)
+        self._to_compute_dict = defaultdict(set)
+        self._computed_dict = defaultdict(set)
 
         self._computed_data = {}
 
@@ -15,19 +18,14 @@ class DoubleTiledStructure(object):
         self._computation_tiles = computation_tiles
 
         for cache_tile in self._cache_tiles:
-            intersect_list = []
-
             for computation_tile in self._computation_tiles:
                 if cache_tile.share_area(computation_tile):
-                    intersect_list.append(computation_tile)
 
-            self._to_compute_dict[cache_tile] = set(intersect_list)
-            self._computed_dict[cache_tile] = set([])
+                    self._to_compute_dict[cache_tile].add(computation_tile)
 
 
 
     def _remember(self, cache_tile_hash, computation_tile):
-
         if computation_tile in self._to_compute_dict[cache_tile_hash]:
             self._computed_dict[cache_tile_hash].add(computation_tile)
             self._to_compute_dict[cache_tile_hash].remove(computation_tile)
@@ -52,6 +50,7 @@ class DoubleTiledStructure(object):
         for computation_tile in self._computed_dict[cache_tile]:
             dat = self._computed_data[computation_tile]
             out[computation_tile.slice_in(cache_tile, clip=True)] = dat[cache_tile.slice_in(computation_tile, clip=True)]
+
         return out
 
 
