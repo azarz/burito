@@ -8,7 +8,6 @@ class DoubleTiledStructure(object):
 
         self._computation_method = computation_method
 
-        #collections.defaultdict (parametre set)
         self._to_compute_dict = defaultdict(set)
         self._computed_dict = defaultdict(set)
 
@@ -42,10 +41,12 @@ class DoubleTiledStructure(object):
 
         assert cache_tile in self._cache_tiles
 
-        out = np.empty(tuple(cache_tile.shape) + (13,), dtype="float32")
-
         for computation_tile in self._to_compute_dict[cache_tile].copy():
             self._compute_tile(computation_tile)
+
+        first_array = list(self._computed_data.values())[0]
+
+        out = np.empty(tuple(cache_tile.shape) + (first_array.shape[-1],), dtype=first_array.dtype)
 
         for computation_tile in self._computed_dict[cache_tile]:
             dat = self._computed_data[computation_tile]

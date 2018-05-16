@@ -226,7 +226,6 @@ class ResampledRaster(AbstractRaster):
         for fp, filename in tile_info:
             with self._lock:
                 input_data.append(self._dico[filename])
-                # del self._dico[filename]
             intersecting_tiles.append(fp)
 
         return self._merge_out_tiles(intersecting_tiles, input_data, input_fp)
@@ -355,10 +354,14 @@ class HeatmapRaster(AbstractRaster):
         rgba_tile = output_fp_to_input_fp(computation_tile, 0.64, self._model.get_layer("rgb").input_shape[1])
         dsm_tile = output_fp_to_input_fp(computation_tile, 1.28, self._model.get_layer("slopes").input_shape[1])
 
-        model_input = (self._resampled_rgba.get_data(rgba_tile)[...,0:3], self._resampled_dsm.get_slopes(dsm_tile))
+        rgba_data = self._resampled_rgba.get_data(rgba_tile)
+        slope_data = self._resampled_dsm.get_slopes(dsm_tile)
 
-        rgb = (model_input[0].astype('float32') - 127.5) / 127.5
-        slopes = model_input[1] / 45 - 1
+        rgba_data = np.where((rgba_data[...,3] == 255)[...,np.newaxis], rgba_data, 0)[...,0:3]
+        rgb = (rgba_data.astype('float32') - 127.5) / 127.5
+
+        slopes = slope_data / 45 - 1
+
         prediction = model.predict([rgb[np.newaxis], slopes[np.newaxis]])[0]
 
         return prediction
@@ -449,18 +452,33 @@ if __name__ == "__main__":
 
     out_fp = out_fp.intersection(out_fp, scale=0.64)
 
+    initial_rgba = datasrc.open_araster(rgb_path)
+    initial_dsm = datasrc.open_araster(dsm_path)
+
     resampled_rgba = ResampledOrthoimage(rgb_path, 0.64, dir_names, cache_dir)
     resampled_dsm = ResampledDSM(dsm_path, 1.28, dir_names, cache_dir)
 
     hmr = HeatmapRaster(model, resampled_rgba, resampled_dsm, dir_names)
 
     display_fp = out_fp.intersection(sg.Point(348264,50978)).dilate(200)
+
+    ini_rgb_fp = initial_rgba.fp.intersection(display_fp)
+    ini_rgb_data = initial_rgba.get_data(fp=ini_rgb_fp, band=-1)
+
+    ini_dsm_fp = initial_dsm.fp.intersection(display_fp)
+    ini_dsm_data = initial_dsm.get_data(fp=ini_dsm_fp)
  
-    data = hmr.get_data(display_fp)
+    hm_data = hmr.get_data(display_fp)
+    r_rgb_data = resampled_rgba.get_data(display_fp)
+
+    dsm_disp_fp = display_fp.intersection(display_fp, scale=1.28)
+
+    r_dsm_data = resampled_dsm.get_data(dsm_disp_fp)
+    r_slope_data = resampled_dsm.get_slopes(dsm_disp_fp)
 
     show_many_images(
-        [np.argmax(data, axis=-1)], 
-        extents=[display_fp.extent]
+        [ini_rgb_data, ini_dsm_data, r_rgb_data, r_dsm_data, r_slope_data[...,0], np.argmax(hm_data, axis=-1)], 
+        extents=[ini_rgb_fp.extent, ini_dsm_fp.extent, display_fp.extent, dsm_disp_fp.extent, dsm_disp_fp.extent, display_fp.extent]
     )
 
     resampled_rgba.__exit__(None, None, None)
