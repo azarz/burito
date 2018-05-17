@@ -52,15 +52,21 @@ class AbstractRaster(object):
         self._full_fp = full_fp
 
     def _merge_out_tiles(self, tiles, data, out_fp):
-        return None
-
-    def get_data(self, input_fp):
-        return None
+        raise NotImplementedError('Should be implemented by all subclasses')
 
     @property
     def fp(self):
         return self._full_fp
+
+    def get_data(self, input_fp):
+        raise NotImplementedError('Should be implemented by all subclasses')
+
+    def get_multi_data(self, fp_iterable):
+        out_pool = mp.pool.ThreadPool(5)
+        promises = [out_pool.apply_async(self.get_data, (fp,)) for fp in fp_iterable] 
+        return promises
     
+
 
 class ResampledRaster(AbstractRaster):
 
@@ -90,6 +96,7 @@ class ResampledRaster(AbstractRaster):
             self._cache_tiles_fps = self._full_fp.tile_count(*tile_count, boundary_effect='shrink')
             self._num_bands = len(raster)
             self._nodata = raster.nodata
+            self._wkt_origin = raster.wkt_origin
 
 
         self._cache_tile_paths = [
@@ -182,11 +189,22 @@ class ResampledRaster(AbstractRaster):
             if len(src) == 4:
                 out = np.where((out[...,3] == 255)[...,np.newaxis], out, 0)
 
-        out_proxy = ds.create_araster(tile_path, tile_fp, src.dtype, len(src), driver="GTiff", band_schema={"nodata": src.nodata}, sr=src.wkt_origin)
+            out_proxy = ds.create_araster(tile_path, tile_fp, src.dtype, len(src), driver="GTiff", band_schema={"nodata": src.nodata}, sr=src.wkt_origin)
+
         out_proxy.set_data(out, band=-1)
         out_proxy.close()
         return out
 
+
+    @property
+    def nodata(self):
+        return self._nodata
+
+    @property
+    def wkt_origin(self):
+        return self._wkt_origin
+    
+    
 
 
 
@@ -219,21 +237,6 @@ class ResampledRaster(AbstractRaster):
             intersecting_tiles.append(fp)
 
         return self._merge_out_tiles(intersecting_tiles, input_data, input_fp)
-
-
-    def _get_multi(self, get_function, fp_iterable):
-
-        out_pool = mp.pool.ThreadPool()
-
-        def async_result_gen():
-            for fp in fp_iterable:
-                yield out_pool.apply_async(get_function, (fp,))
-
-        return async_result_gen()
-
-
-    def get_multi_data(self, fp_iterable):
-        return self._get_multi(self.get_data, fp_iterable)
 
 
 
@@ -279,10 +282,13 @@ class ResampledDSM(ResampledRaster):
 
 
 
+
+
 class Slopes(AbstractRaster):
-    def __init__(self, abstract_dsm):
-        self._full_fp = abstract_dsm.fp
-        self._parent_dsm = abstract_dsm
+    def __init__(self, dsm):
+        self._full_fp = dsm.fp
+        self._parent_dsm = dsm
+        self._nodata = dsm.nodata
 
 
     def get_data(self, input_fp):
@@ -295,13 +301,13 @@ class Slopes(AbstractRaster):
             [0, 1, 0],
         ]
         arru = ndi.maximum_filter(arr, None, kernel) - arr
-        arru = np.arctan(arru / fp.pxsizex)
+        arru = np.arctan(arru / input_fp.pxsizex)
         arru = arru / np.pi * 180.
         arru[nodata_mask] = 0
         arru = arru[1:-1, 1:-1]
 
         arrd = arr - ndi.minimum_filter(arr, None, kernel)
-        arrd = np.arctan(arrd / fp.pxsizex)
+        arrd = np.arctan(arrd / input_fp.pxsizex)
         arrd = arrd / np.pi * 180.
         arrd[nodata_mask] = 0
         arrd = arrd[1:-1, 1:-1]
@@ -312,20 +318,21 @@ class Slopes(AbstractRaster):
 
 
 
+
 class HeatmapRaster(AbstractRaster):
 
-    def __init__(self, model, resampled_rgba, resampled_dsm, dir_names, cache_dir="./.cache"):
+    def __init__(self, model, resampled_rgba, slopes, dir_names, cache_dir="./.cache"):
 
         self._model = model
         self._num_bands = LABEL_COUNT
 
         self._resampled_rgba = resampled_rgba
-        self._resampled_dsm = resampled_dsm
+        self._slopes = slopes
 
-        max_scale = max(resampled_rgba.fp.scale[0], resampled_dsm.fp.scale[0])
-        min_scale = min(resampled_rgba.fp.scale[0], resampled_dsm.fp.scale[0])
+        max_scale = max(resampled_rgba.fp.scale[0], slopes.fp.scale[0])
+        min_scale = min(resampled_rgba.fp.scale[0], slopes.fp.scale[0])
       
-        self._full_fp = resampled_rgba.fp.intersection(resampled_dsm.fp, scale=max_scale, alignment=(0,0))
+        self._full_fp = resampled_rgba.fp.intersection(slopes.fp, scale=max_scale, alignment=(0,0))
 
         self._full_fp = self._full_fp.intersection(self._full_fp, scale=min_scale)
 
@@ -342,20 +349,23 @@ class HeatmapRaster(AbstractRaster):
         ]
 
 
+        self._lock = threading.Lock()
+
+
     def _computation_method(self, computation_tile):
 
         rgba_tile = output_fp_to_input_fp(computation_tile, 0.64, self._model.get_layer("rgb").input_shape[1])
         dsm_tile = output_fp_to_input_fp(computation_tile, 1.28, self._model.get_layer("slopes").input_shape[1])
 
         rgba_data = self._resampled_rgba.get_data(rgba_tile)
-        slope_data = self._resampled_dsm.get_slopes(dsm_tile)
+        slope_data = self._slopes.get_data(dsm_tile)
 
         rgba_data = np.where((rgba_data[...,3] == 255)[...,np.newaxis], rgba_data, 0)[...,0:3]
         rgb = (rgba_data.astype('float32') - 127.5) / 127.5
 
         slopes = slope_data / 45 - 1
 
-        prediction = model.predict([rgb[np.newaxis], slopes[np.newaxis]])[0]
+        prediction = self._model.predict([rgb[np.newaxis], slopes[np.newaxis]])[0]
 
         return prediction
 
@@ -389,10 +399,11 @@ class HeatmapRaster(AbstractRaster):
             file_exists = os.path.isfile(filepath)
             
             if not file_exists:
-                prediction = self._double_tiled_structure.compute_cache_data(cache_tile)
 
-                with ds.open_araster(rgb_path).close as src:
-                    out_proxy = ds.create_araster(filepath, cache_tile, "float32", LABEL_COUNT, driver="GTiff", sr=src.wkt_origin)
+                with self._lock:
+                    prediction = self._double_tiled_structure.compute_cache_data(cache_tile)
+
+                out_proxy = ds.create_araster(filepath, cache_tile, "float32", LABEL_COUNT, driver="GTiff", sr=self._resampled_rgba.wkt_origin)
 
                 out_proxy.set_data(prediction, band=-1)
                 out_proxy.close()
@@ -405,6 +416,7 @@ class HeatmapRaster(AbstractRaster):
             output_data.append(prediction)
 
         return self._merge_out_tiles(intersecting_tiles, output_data, input_fp)
+
 
 
 
@@ -448,34 +460,63 @@ def main():
 
     out_fp = out_fp.intersection(out_fp, scale=0.64)
 
+
+
     initial_rgba = datasrc.open_araster(rgb_path)
     initial_dsm = datasrc.open_araster(dsm_path)
 
     resampled_rgba = ResampledOrthoimage(rgb_path, 0.64, dir_names, cache_dir)
     resampled_dsm = ResampledDSM(dsm_path, 1.28, dir_names, cache_dir)
 
-    hmr = HeatmapRaster(model, resampled_rgba, resampled_dsm, dir_names)
+    slopes = Slopes(resampled_dsm)
 
-    display_fp = out_fp.intersection(sg.Point(348264,50978)).dilate(200)
+    hmr = HeatmapRaster(model, resampled_rgba, slopes, dir_names)
 
-    ini_rgb_fp = initial_rgba.fp.intersection(display_fp)
-    ini_rgb_data = initial_rgba.get_data(fp=ini_rgb_fp, band=-1)
 
-    ini_dsm_fp = initial_dsm.fp.intersection(display_fp)
-    ini_dsm_data = initial_dsm.get_data(fp=ini_dsm_fp)
- 
-    hm_data = hmr.get_data(display_fp)
-    r_rgb_data = resampled_rgba.get_data(display_fp)
+    big_display_fp = out_fp
+    big_dsm_disp_fp = big_display_fp.intersection(big_display_fp, scale=1.28, alignment=(0,0))
 
-    dsm_disp_fp = display_fp.intersection(display_fp, scale=1.28)
+    display_tiles = big_display_fp.tile_count(5,5,boundary_effect='shrink')
+    dsm_display_tiles = big_dsm_disp_fp.tile_count(5,5,boundary_effect='shrink')
 
-    r_dsm_data = resampled_dsm.get_data(dsm_disp_fp)
-    r_slope_data = resampled_dsm.get_slopes(dsm_disp_fp)
 
-    show_many_images(
-        [ini_rgb_data, ini_dsm_data, r_rgb_data, r_dsm_data, r_slope_data[...,0], np.argmax(hm_data, axis=-1)], 
-        extents=[ini_rgb_fp.extent, ini_dsm_fp.extent, display_fp.extent, dsm_disp_fp.extent, dsm_disp_fp.extent, display_fp.extent]
-    )
+    # for display_fp in display_tiles.flat:
+    #     # display_fp = out_fp.intersection(sg.Point(348264,50978)).dilate(200)
+
+    #     dsm_disp_fp = display_fp.intersection(display_fp, scale=1.28, alignment=(0,0))
+
+    #     ini_rgb_fp = initial_rgba.fp.intersection(display_fp)
+    #     ini_dsm_fp = initial_dsm.fp.intersection(display_fp)
+
+
+    #     ini_rgb_data = initial_rgba.get_data(fp=ini_rgb_fp, band=-1)    
+    #     ini_dsm_data = initial_dsm.get_data(fp=ini_dsm_fp)
+     
+    #     hm_data = hmr.get_data(display_fp)
+
+    #     r_rgb_data = resampled_rgba.get_data(display_fp)
+
+    #     r_dsm_data = resampled_dsm.get_data(dsm_disp_fp)
+    #     r_slope_data = slopes.get_data(dsm_disp_fp)
+
+    #     show_many_images(
+    #         [ini_rgb_data, ini_dsm_data, r_rgb_data, r_dsm_data, r_slope_data[...,0], np.argmax(hm_data, axis=-1)], 
+    #         extents=[ini_rgb_fp.extent, ini_dsm_fp.extent, display_fp.extent, dsm_disp_fp.extent, dsm_disp_fp.extent, display_fp.extent]
+    #     )
+
+    hm_multi_data = hmr.get_multi_data(display_tiles.flat)
+    r_rgb_multi_data = resampled_rgba.get_multi_data(display_tiles.flat)
+    r_slope_multi_data = slopes.get_multi_data(dsm_display_tiles.flat)
+
+    for hm_data, rgb_data, slope_data in zip(hm_multi_data, r_rgb_multi_data, r_slope_multi_data):
+
+        display_fp = next(display_tiles.flat)
+        dsm_disp_fp = next(dsm_display_tiles.flat)
+
+        show_many_images(
+            [rgb_data.get(), slope_data.get()[...,0], np.argmax(hm_data.get(), axis=-1)], 
+            extents=[display_fp.extent, dsm_disp_fp.extent, display_fp.extent]
+        )
 
 
 if __name__ == "__main__":
