@@ -55,7 +55,9 @@ class DoubleTiledStructure(object):
 
             del dat
             self._computed_data[computation_tile][cache_tile.slice_in(computation_tile, clip=True)] = -1
+            print(len(np.unique(self._computed_data[computation_tile])))
             if (self._computed_data[computation_tile] == -1).all():
+                print("deleting (DTS)  ", len(self._computed_data.keys()))
                 del self._computed_data[computation_tile]
 
         return out

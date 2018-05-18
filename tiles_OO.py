@@ -7,6 +7,7 @@ import pickle
 import queue
 import threading
 import hashlib
+import sys
 
 from keras.models import load_model
 import buzzard as buzz
@@ -240,6 +241,7 @@ class ResampledRaster(AbstractRaster):
                 input_data.append(self._dico[filename].copy())
                 self._dico[filename][input_fp.slice_in(fp, clip=True)] = -1
                 if (self._dico[filename] == -1).all():
+                    print(filename, "   deleting (Resampler)  ", len(self._dico.keys()),)
                     del self._dico[filename]
                     
             intersecting_tiles.append(fp)
@@ -506,8 +508,8 @@ def main():
     big_display_fp = out_fp
     big_dsm_disp_fp = big_display_fp.intersection(big_display_fp, scale=1.28, alignment=(0, 0))
 
-    display_tiles = big_display_fp.tile_count(20, 20, boundary_effect='shrink')
-    dsm_display_tiles = big_dsm_disp_fp.tile_count(20, 20, boundary_effect='shrink')
+    display_tiles = big_display_fp.tile_count(5, 5, boundary_effect='shrink')
+    dsm_display_tiles = big_dsm_disp_fp.tile_count(5, 5, boundary_effect='shrink')
 
 
     # for display_fp in display_tiles.flat:
