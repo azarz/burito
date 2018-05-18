@@ -61,10 +61,10 @@ class AbstractRaster(object):
     def get_data(self, input_fp):
         raise NotImplementedError('Should be implemented by all subclasses')
 
-    def get_multi_data(self, fp_iterable):
+    def get_multi_data(self, fp_iterable, out_queue):
         out_pool = mp.pool.ThreadPool(5)
-        promises = [out_pool.apply_async(self.get_data, (fp,)) for fp in fp_iterable] 
-        return promises
+        for fp in fp_iterable:
+            out_queue.put(out_pool.apply_async(self.get_data, (fp,)))
     
 
 
@@ -284,6 +284,7 @@ class ResampledDSM(ResampledRaster):
 
 
 
+
 class Slopes(AbstractRaster):
     def __init__(self, dsm):
         self._full_fp = dsm.fp
@@ -423,7 +424,6 @@ class HeatmapRaster(AbstractRaster):
 
 
 
-
 def main():
     print("hello")
 
@@ -476,8 +476,8 @@ def main():
     big_display_fp = out_fp
     big_dsm_disp_fp = big_display_fp.intersection(big_display_fp, scale=1.28, alignment=(0,0))
 
-    display_tiles = big_display_fp.tile_count(5,5,boundary_effect='shrink')
-    dsm_display_tiles = big_dsm_disp_fp.tile_count(5,5,boundary_effect='shrink')
+    display_tiles = big_display_fp.tile_count(20,20,boundary_effect='shrink')
+    dsm_display_tiles = big_dsm_disp_fp.tile_count(20,20,boundary_effect='shrink')
 
 
     # for display_fp in display_tiles.flat:
@@ -504,17 +504,27 @@ def main():
     #         extents=[ini_rgb_fp.extent, ini_dsm_fp.extent, display_fp.extent, dsm_disp_fp.extent, dsm_disp_fp.extent, display_fp.extent]
     #     )
 
-    hm_multi_data = hmr.get_multi_data(display_tiles.flat)
-    r_rgb_multi_data = resampled_rgba.get_multi_data(display_tiles.flat)
-    r_slope_multi_data = slopes.get_multi_data(dsm_display_tiles.flat)
+    out_queue1 = queue.Queue(5)
+    out_queue2 = queue.Queue(5)
+    out_queue3 = queue.Queue(5)
 
-    for hm_data, rgb_data, slope_data in zip(hm_multi_data, r_rgb_multi_data, r_slope_multi_data):
+    def hm_worker():
+        hmr.get_multi_data(display_tiles.flat, out_queue1)
+    def rgb_worker():
+        resampled_rgba.get_multi_data(display_tiles.flat, out_queue2)
+    def slope_worker():
+        slopes.get_multi_data(dsm_display_tiles.flat, out_queue3)
 
-        display_fp = next(display_tiles.flat)
-        dsm_disp_fp = next(dsm_display_tiles.flat)
+    hm_thread = threading.Thread(target=hm_worker)
+    hm_thread.start()    
+    rgb_thread = threading.Thread(target=rgb_worker)
+    rgb_thread.start()    
+    slope_thread = threading.Thread(target=slope_worker)
+    slope_thread.start()
 
+    for display_fp, dsm_disp_fp in zip(display_tiles.flat, dsm_display_tiles.flat):
         show_many_images(
-            [rgb_data.get(), slope_data.get()[...,0], np.argmax(hm_data.get(), axis=-1)], 
+            [out_queue2.get().get(), out_queue3.get().get()[...,0], np.argmax(out_queue1.get().get(), axis=-1)], 
             extents=[display_fp.extent, dsm_disp_fp.extent, display_fp.extent]
         )
 
