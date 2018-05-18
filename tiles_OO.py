@@ -91,7 +91,7 @@ class ResampledRaster(AbstractRaster):
         ds = buzz.DataSource(allow_interpolation=True)
 
         with ds.open_araster(self._raster_path).close as raster:
-            self._full_fp = raster.fp.intersection(raster.fp, scale=scale, alignment=(0,0))
+            self._full_fp = raster.fp.intersection(raster.fp, scale=scale, alignment=(0, 0))
             tile_count = np.ceil(self._full_fp.rsize / 500) 
             self._cache_tiles_fps = self._full_fp.tile_count(*tile_count, boundary_effect='shrink')
             self._num_bands = len(raster)
@@ -100,7 +100,11 @@ class ResampledRaster(AbstractRaster):
 
 
         self._cache_tile_paths = [
-            str(Path(cache_dir) / dir_names[frozenset({rtype})] / str(hashlib.md5(repr(fp).encode()).hexdigest()))
+            str(Path(cache_dir) / dir_names[frozenset({rtype})] / str(str(np.around(fp.tlx, 2)) + "_" + 
+                                                                        str(np.around(fp.tly, 2)) + "_" + 
+                                                                        str(np.around(fp.pxsizex, 2)) + "_" + 
+                                                                        str(np.around(fp.rsizex, 2)))
+            )
             for fp in self._cache_tiles_fps.flat
         ]
 
@@ -333,7 +337,7 @@ class HeatmapRaster(AbstractRaster):
         max_scale = max(resampled_rgba.fp.scale[0], slopes.fp.scale[0])
         min_scale = min(resampled_rgba.fp.scale[0], slopes.fp.scale[0])
       
-        self._full_fp = resampled_rgba.fp.intersection(slopes.fp, scale=max_scale, alignment=(0,0))
+        self._full_fp = resampled_rgba.fp.intersection(slopes.fp, scale=max_scale, alignment=(0, 0))
 
         self._full_fp = self._full_fp.intersection(self._full_fp, scale=min_scale)
 
@@ -345,7 +349,11 @@ class HeatmapRaster(AbstractRaster):
         self._double_tiled_structure = DoubleTiledStructure(list(self._cache_tiles_fps.flat), list(self._computation_tiles.flat), self._computation_method)
 
         self._cache_tile_paths = [
-            str(Path(cache_dir) / dir_names[frozenset({'dsm', "ortho"})] / str(hashlib.md5(repr(fp).encode()).hexdigest()))
+            str(Path(cache_dir) / dir_names[frozenset({"dsm", "ortho"})] / str(str(np.around(fp.tlx, 2)) + "_" + 
+                                                                        str(np.around(fp.tly, 2)) + "_" + 
+                                                                        str(np.around(fp.pxsizex, 2)) + "_" + 
+                                                                        str(np.around(fp.rsizex, 2)))
+            )
             for fp in self._cache_tiles_fps.flat
         ]
 
@@ -402,12 +410,22 @@ class HeatmapRaster(AbstractRaster):
             if not file_exists:
 
                 with self._lock:
-                    prediction = self._double_tiled_structure.compute_cache_data(cache_tile)
+                    # checking again if the file exists (happens when entering the lock after waiting)
+                    file_exists = os.path.isfile(filepath)
 
-                out_proxy = ds.create_araster(filepath, cache_tile, "float32", LABEL_COUNT, driver="GTiff", sr=self._resampled_rgba.wkt_origin)
+                    if not file_exists:
+                        print("--> using GPU...")
+                        prediction = self._double_tiled_structure.compute_cache_data(cache_tile)
+                        print("<-- no more GPU")
 
-                out_proxy.set_data(prediction, band=-1)
-                out_proxy.close()
+                        out_proxy = ds.create_araster(filepath, cache_tile, "float32", LABEL_COUNT, driver="GTiff", sr=self._resampled_rgba.wkt_origin)
+                        out_proxy.set_data(prediction, band=-1)
+                        out_proxy.close()
+
+                if file_exists:
+                    print("!! cache was calculated when i was waiting")
+                    with ds.open_araster(filepath).close as src:
+                        prediction = src.get_data(band=-1)
 
             else:
                 with ds.open_araster(filepath).close as src:
@@ -456,7 +474,7 @@ def main():
 
 
     with datasrc.open_araster(rgb_path).close as raster:
-        out_fp = raster.fp.intersection(raster.fp, scale=1.28, alignment=(0,0))
+        out_fp = raster.fp.intersection(raster.fp, scale=1.28, alignment=(0, 0))
 
     out_fp = out_fp.intersection(out_fp, scale=0.64)
 
@@ -474,10 +492,10 @@ def main():
 
 
     big_display_fp = out_fp
-    big_dsm_disp_fp = big_display_fp.intersection(big_display_fp, scale=1.28, alignment=(0,0))
+    big_dsm_disp_fp = big_display_fp.intersection(big_display_fp, scale=1.28, alignment=(0, 0))
 
-    display_tiles = big_display_fp.tile_count(20,20,boundary_effect='shrink')
-    dsm_display_tiles = big_dsm_disp_fp.tile_count(20,20,boundary_effect='shrink')
+    display_tiles = big_display_fp.tile_count(20, 20, boundary_effect='shrink')
+    dsm_display_tiles = big_dsm_disp_fp.tile_count(20, 20, boundary_effect='shrink')
 
 
     # for display_fp in display_tiles.flat:
