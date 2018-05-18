@@ -11,7 +11,7 @@ class DoubleTiledStructure(object):
         self._to_compute_dict = defaultdict(set)
         self._computed_dict = defaultdict(set)
 
-        self._computed_data = {}
+        self._computed_data = {}  
 
         self._cache_tiles = cache_tiles
         self._computation_tiles = computation_tiles
@@ -47,9 +47,16 @@ class DoubleTiledStructure(object):
 
         out = np.empty(tuple(cache_tile.shape) + (first_array.shape[-1],), dtype=first_array.dtype)
 
+        del first_array
+
         for computation_tile in self._computed_dict[cache_tile]:
             dat = self._computed_data[computation_tile]
             out[computation_tile.slice_in(cache_tile, clip=True)] = dat[cache_tile.slice_in(computation_tile, clip=True)]
+
+            del dat
+            self._computed_data[computation_tile][cache_tile.slice_in(computation_tile, clip=True)] = -1
+            if (self._computed_data[computation_tile] == -1).all():
+                del self._computed_data[computation_tile]
 
         return out
 

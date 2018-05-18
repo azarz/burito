@@ -237,7 +237,11 @@ class ResampledRaster(AbstractRaster):
 
         for fp, filename in tile_info:
             with self._lock:
-                input_data.append(self._dico[filename])
+                input_data.append(self._dico[filename].copy())
+                self._dico[filename][input_fp.slice_in(fp, clip=True)] = -1
+                if (self._dico[filename] == -1).all():
+                    del self._dico[filename]
+                    
             intersecting_tiles.append(fp)
 
         return self._merge_out_tiles(intersecting_tiles, input_data, input_fp)
@@ -260,6 +264,7 @@ class ResampledOrthoimage(ResampledRaster):
         for tile, dat  in zip(tiles, data):
             assert tile.same_grid(out_fp)
             out[tile.slice_in(out_fp, clip=True)] = dat[out_fp.slice_in(tile, clip=True)]
+
         return out
 
 
@@ -281,6 +286,7 @@ class ResampledDSM(ResampledRaster):
         for tile, dat  in zip(tiles, data):
             assert tile.same_grid(out_fp)
             out[tile.slice_in(out_fp, clip=True)] = dat[out_fp.slice_in(tile, clip=True)]
+
         return out
 
 
@@ -359,6 +365,7 @@ class HeatmapRaster(AbstractRaster):
 
 
         self._lock = threading.Lock()
+        self._thread_storage = threading.local()
 
 
     def _computation_method(self, computation_tile):
@@ -396,7 +403,12 @@ class HeatmapRaster(AbstractRaster):
         output_data = []
         intersecting_tiles = []
 
-        ds = buzz.DataSource(allow_interpolation=True)
+        if not hasattr(self._thread_storage, "ds"):
+            ds = buzz.DataSource(allow_interpolation=True)
+            self._thread_storage.ds = ds
+
+        else:
+            ds = self._thread_storage.ds
 
         def tile_info_gen():
             for cache_tile, filename in zip(self._cache_tiles_fps.flat, self._cache_tile_paths):
@@ -541,11 +553,10 @@ def main():
     slope_thread.start()
 
     for display_fp, dsm_disp_fp in zip(display_tiles.flat, dsm_display_tiles.flat):
-        show_many_images(
-            [out_queue2.get().get(), out_queue3.get().get()[...,0], np.argmax(out_queue1.get().get(), axis=-1)], 
-            extents=[display_fp.extent, dsm_disp_fp.extent, display_fp.extent]
-        )
-
+        # show_many_images(
+        hey =    [out_queue2.get().get(), out_queue3.get().get()[...,0], np.argmax(out_queue1.get().get(), axis=-1)]#, 
+            # extents=[display_fp.extent, dsm_disp_fp.extent, display_fp.extent]
+        # )
 
 if __name__ == "__main__":
     main()
