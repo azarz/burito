@@ -11,7 +11,7 @@ class DoubleTiledStructure(object):
         self._to_compute_dict = defaultdict(set)
         self._computed_dict = defaultdict(set)
 
-        self._computed_data = {}  
+        self._computed_data = {}
 
         self._cache_tiles = cache_tiles
         self._computation_tiles = computation_tiles
@@ -31,12 +31,11 @@ class DoubleTiledStructure(object):
 
 
     def _update_all_sets(self, computation_tile):
-
         for cache_tile in self._cache_tiles:
             self._remember(cache_tile, computation_tile)
 
 
-    def compute_cache_data(self, cache_tile):
+    def get_cache_data(self, cache_tile):
 
         assert cache_tile in self._cache_tiles
 
@@ -55,9 +54,7 @@ class DoubleTiledStructure(object):
 
             del dat
             self._computed_data[computation_tile][cache_tile.slice_in(computation_tile, clip=True)] = -1
-            print(len(np.unique(self._computed_data[computation_tile])))
             if (self._computed_data[computation_tile] == -1).all():
-                print("deleting (DTS)  ", len(self._computed_data.keys()))
                 del self._computed_data[computation_tile]
 
         return out

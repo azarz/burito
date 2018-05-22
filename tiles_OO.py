@@ -20,6 +20,7 @@ from uids_of_paths import uids_of_paths
 from watcher import Watcher
 
 from DoubleTiledStructure import DoubleTiledStructure
+from Query import FullQuery
 
 
 CATEGORIES= (
@@ -62,10 +63,13 @@ class AbstractRaster(object):
     def get_data(self, input_fp):
         raise NotImplementedError('Should be implemented by all subclasses')
 
-    def get_multi_data(self, fp_iterable, out_queue):
+    def get_multi_data(self, fp_iterable, queue_size=5):
+        out_queue = queue.Queue(queue_size)
         out_pool = mp.pool.ThreadPool(5)
         for fp in fp_iterable:
             out_queue.put(out_pool.apply_async(self.get_data, (fp,)))
+
+        return out_queue
     
 
 
@@ -239,10 +243,10 @@ class ResampledRaster(AbstractRaster):
         for fp, filename in tile_info:
             with self._lock:
                 input_data.append(self._dico[filename].copy())
-                self._dico[filename][input_fp.slice_in(fp, clip=True)] = -1
-                if (self._dico[filename] == -1).all():
-                    print(filename, "   deleting (Resampler)  ", len(self._dico.keys()),)
-                    del self._dico[filename]
+                # self._dico[filename][input_fp.slice_in(fp, clip=True)] = 12
+                # if (self._dico[filename] == 12).all():
+                #     print(filename, "   deleting (Resampler)  ", len(self._dico.keys()),)
+                #     del self._dico[filename]
                     
             intersecting_tiles.append(fp)
 
@@ -378,8 +382,8 @@ class HeatmapRaster(AbstractRaster):
         rgba_data = self._resampled_rgba.get_data(rgba_tile)
         slope_data = self._slopes.get_data(dsm_tile)
 
-        rgba_data = np.where((rgba_data[...,3] == 255)[...,np.newaxis], rgba_data, 0)[...,0:3]
-        rgb = (rgba_data.astype('float32') - 127.5) / 127.5
+        rgb_data = np.where((rgba_data[...,3] == 255)[...,np.newaxis], rgba_data, 0)[...,0:3]
+        rgb = (rgb_data.astype('float32') - 127.5) / 127.5
 
         slopes = slope_data / 45 - 1
 
@@ -429,7 +433,7 @@ class HeatmapRaster(AbstractRaster):
 
                     if not file_exists:
                         print("--> using GPU...")
-                        prediction = self._double_tiled_structure.compute_cache_data(cache_tile)
+                        prediction = self._double_tiled_structure.get_cache_data(cache_tile)
                         print("<-- no more GPU")
 
                         out_proxy = ds.create_araster(filepath, cache_tile, "float32", LABEL_COUNT, driver="GTiff", sr=self._resampled_rgba.wkt_origin)
@@ -449,7 +453,6 @@ class HeatmapRaster(AbstractRaster):
             output_data.append(prediction)
 
         return self._merge_out_tiles(intersecting_tiles, output_data, input_fp)
-
 
 
 
@@ -512,40 +515,10 @@ def main():
     dsm_display_tiles = big_dsm_disp_fp.tile_count(5, 5, boundary_effect='shrink')
 
 
-    # for display_fp in display_tiles.flat:
-    #     # display_fp = out_fp.intersection(sg.Point(348264,50978)).dilate(200)
+    out_queue1 = hmr.get_multi_data(display_tiles.flat, 5)
+    out_queue2 = resampled_rgba.get_multi_data(display_tiles.flat, 5)
+    out_queue3 = slopes.get_multi_data(dsm_display_tiles.flat, 5)
 
-    #     dsm_disp_fp = display_fp.intersection(display_fp, scale=1.28, alignment=(0,0))
-
-    #     ini_rgb_fp = initial_rgba.fp.intersection(display_fp)
-    #     ini_dsm_fp = initial_dsm.fp.intersection(display_fp)
-
-
-    #     ini_rgb_data = initial_rgba.get_data(fp=ini_rgb_fp, band=-1)    
-    #     ini_dsm_data = initial_dsm.get_data(fp=ini_dsm_fp)
-     
-    #     hm_data = hmr.get_data(display_fp)
-
-    #     r_rgb_data = resampled_rgba.get_data(display_fp)
-
-    #     r_dsm_data = resampled_dsm.get_data(dsm_disp_fp)
-    #     r_slope_data = slopes.get_data(dsm_disp_fp)
-
-    #     show_many_images(
-    #         [ini_rgb_data, ini_dsm_data, r_rgb_data, r_dsm_data, r_slope_data[...,0], np.argmax(hm_data, axis=-1)], 
-    #         extents=[ini_rgb_fp.extent, ini_dsm_fp.extent, display_fp.extent, dsm_disp_fp.extent, dsm_disp_fp.extent, display_fp.extent]
-    #     )
-
-    out_queue1 = queue.Queue(5)
-    out_queue2 = queue.Queue(5)
-    out_queue3 = queue.Queue(5)
-
-    def hm_worker():
-        hmr.get_multi_data(display_tiles.flat, out_queue1)
-    def rgb_worker():
-        resampled_rgba.get_multi_data(display_tiles.flat, out_queue2)
-    def slope_worker():
-        slopes.get_multi_data(dsm_display_tiles.flat, out_queue3)
 
     hm_thread = threading.Thread(target=hm_worker)
     hm_thread.start()    
