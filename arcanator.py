@@ -50,52 +50,15 @@ def output_fp_to_input_fp(fp, scale, rsize):
 
 class AbstractRaster(object):
 
-    def __init__(self, full_fp):
-        self._full_fp = full_fp
-
-    def _merge_out_tiles(self, tiles, data, out_fp):
-        raise NotImplementedError('Should be implemented by all subclasses')
-
-    @property
-    def fp(self):
-        return self._full_fp
-
-    def get_data(self, input_fp):
-        raise NotImplementedError('Should be implemented by all subclasses')
-
-    def get_multi_data(self, fp_iterable, queue_size=5):
-        out_queue = queue.Queue(queue_size)
-        out_pool = mp.pool.ThreadPool(5)
-        for fp in fp_iterable:
-            out_queue.put(out_pool.apply_async(self.get_data, (fp,)))
-
-        return out_queue
-    
-
-
-class ResampledRaster(AbstractRaster):
-
-    def __init__(self, path, scale, rtype, dir_names, cache_dir="./.cache"):
-
-        self._lock = threading.Lock()
-        self._cv = threading.Condition()
-        self._req_q = queue.Queue(5)
-        self._thread_storage = threading.local()
-
-        self._computation_pool = mp.pool.ThreadPool()
-        self._io_pool = mp.pool.ThreadPool()
-
-        self._dispatcher_thread = threading.Thread(target=self._dispatcher)
-        self._dispatcher_thread.daemon = True
-        self._dispatcher_thread.start()
-
-        self._dico = {}
-
-        self._raster_path = path
+    def __init__(self, raster_path):
+        self._queries = []
+        self._primitives = []
+        self._scheduler_thread = threading.Thread(target=self._scheduler, daemon=True)
+        self._scheduler_thread.start()
 
         ds = buzz.DataSource(allow_interpolation=True)
 
-        with ds.open_araster(self._raster_path).close as raster:
+        with ds.open_araster(raster_path).close as raster:
             self._full_fp = raster.fp.intersection(raster.fp, scale=scale, alignment=(0, 0))
             tile_count = np.ceil(self._full_fp.rsize / 500) 
             self._cache_tiles_fps = self._full_fp.tile_count(*tile_count, boundary_effect='shrink')
@@ -114,139 +77,50 @@ class ResampledRaster(AbstractRaster):
         ]
 
 
+        self._computation_tiles = self._cache_tiles_fps
 
-    def _callback_dico(self, args, res):
-        with self._lock:
-            self._dico[args[1]] = res
-        with self._cv:
-            self._cv.notify_all()
-        self._req_q.task_done()
+        self._double_tiled_structure = DoubleTiledStructure(self._cache_tiles_fps, self._computation_tiles, self._computation_method)
 
-    def _dispatcher(self):
+
+    def _scheduler(self):
         while True:
-            args = self._req_q.get()
-
-            with self._lock:
-                met = args[1] in self._dico.keys()
-                file_exists = os.path.isfile(args[1])
-
-                # met
-                if met:
-                    value = self._dico[args[1]]
-
-                    # Computing
-                    if isinstance(value, int):
-                        # In both fileExists and !fileExists cases, we wait
-                        self._computation_pool.apply_async(self._wait_for_resampling, (args[1],))
-                        
-                    # Computed
-                    else:
-                        # fileExists
-                        if os.path.isfile(args[1]):
-                            # ReadingFile
-                            self._io_pool.apply_async(self._get_tile_data, (args[1],), callback=functools.partial(self._callback_dico, args))
-                        # !fileExists
-                        else:
-                            # Should not happen
-                            raise RuntimeError("There should be a file")
-
-                # !met
-                else:
-                    # fileExists
-                    if file_exists:
-                        print("reading_file")
-                        # Reading file
-                        self._dico[args[1]] = 0
-                        self._io_pool.apply_async(self._get_tile_data, (args[1],), callback=functools.partial(self._callback_dico, args))
-                    # !fileExists
-                    else:
-                        print("writing_file")
-                        # Writing file
-                        self._dico[args[1]] = 0
-                        self._computation_pool.apply_async(self._resample_tile, args, callback=functools.partial(self._callback_dico, args))
+            pass
 
 
 
-    def _wait_for_resampling(self, dummy_value):
-        with self._cv:
-            while isinstance(self._dico[dummy_value], int):
-                self._cv.wait()
-            self._req_q.task_done()
 
 
-    def _get_tile_data(self, tile_path):
-        if not hasattr(self._thread_storage, "ds"):
-            ds = buzz.DataSource(allow_interpolation=True)
-            self._thread_storage.ds = ds
-        else:
-            ds = self._thread_storage.ds
-
-        with ds.open_araster(tile_path).close as raster:
-            out = raster.get_data(band=-1)
-        return out
-
-    def _resample_tile(self, tile_fp, tile_path):
-        if not hasattr(self._thread_storage, "ds"):
-            ds = buzz.DataSource(allow_interpolation=True)
-            self._thread_storage.ds = ds
-
-        else:
-            ds = self._thread_storage.ds
-
-        with ds.open_araster(self._raster_path).close as src:
-            out = src.get_data(band=-1, fp=tile_fp)
-            if len(src) == 4:
-                out = np.where((out[...,3] == 255)[...,np.newaxis], out, 0)
-
-            out_proxy = ds.create_araster(tile_path, tile_fp, src.dtype, len(src), driver="GTiff", band_schema={"nodata": src.nodata}, sr=src.wkt_origin)
-
-        out_proxy.set_data(out, band=-1)
-        out_proxy.close()
-        return out
-
+    def _merge_out_tiles(self, tiles, data, out_fp):
+        raise NotImplementedError('Should be implemented by all subclasses')
 
     @property
-    def nodata(self):
-        return self._nodata
+    def fp(self):
+        return self._full_fp
 
-    @property
-    def wkt_origin(self):
-        return self._wkt_origin
-    
+    def _produce_data(self, input_fp):
+        raise NotImplementedError('Should be implemented by all subclasses')
+
+    def get_multi_data(self, fp_iterable, queue_size=5):
+        query = FullQuery(queue_size)
+        query.produce.to_verb = fp_iterable
+
+        self._queries.append(query)
+        return query.produce.verbed
+
+
+    def get_data(self, fp):
+        return get_multi_data([fp]).get()
     
 
 
 
-    def get_data(self, input_fp):
-        if not hasattr(self._thread_storage, "ds"):
-            ds = buzz.DataSource(allow_interpolation=True)
-            self._thread_storage.ds = ds
+class ResampledRaster(AbstractRaster):
 
-        else:
-            ds = self._thread_storage.ds
+    def __init__(self, path, scale, rtype, dir_names, cache_dir="./.cache"):
 
-        input_data = []
-        intersecting_tiles = []
+    
+    
 
-        def tile_info_gen():
-            for cache_tile, filename in zip(self._cache_tiles_fps.flat, self._cache_tile_paths):
-                if cache_tile.share_area(input_fp):
-                    yield cache_tile, filename
-
-        tile_info = list(tile_info_gen())
-
-        for fp, filename in tile_info:
-            self._req_q.put((fp, filename))
-            
-        self._req_q.join()
-
-        for fp, filename in tile_info:
-            with self._lock:
-                input_data.append(self._dico[filename].copy())
-                    
-            intersecting_tiles.append(fp)
-
-        return self._merge_out_tiles(intersecting_tiles, input_data, input_fp)
 
 
 

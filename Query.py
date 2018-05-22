@@ -3,15 +3,15 @@ import queue
 class QueryPart(object):
 
 	def __init__(self, qsize=5):
-		self._to_verb = []
-		self._verbed = queue.Queue(qsize)
-		self._staging = []
+		self.to_verb = []
+		self.verbed = queue.Queue(qsize)
+		self.staging = []
 
 
 class FullQuery(object):
 
-	def __init__(self):
-		self._produce = QueryPart()
-		self._cache_out = QueryPart()
-		self._compute = QueryPart()
-		self._collect = QueryPart()
+	def __init__(self, queue_size):
+		self.produce = QueryPart(qsize=queue_size)
+		self.cache_out = QueryPart(qsize=queue_size)
+		self.compute = QueryPart(qsize=queue_size)
+		self.collect = QueryPart(qsize=queue_size)
