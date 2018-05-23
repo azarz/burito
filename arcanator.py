@@ -19,9 +19,8 @@ from show_many_images import show_many_images
 from uids_of_paths import uids_of_paths
 from watcher import Watcher
 
-from DoubleTiledStructure import DoubleTiledStructure
 from Query import FullQuery
-
+from DoubleTiledStructure import DoubleTiledStructure
 
 CATEGORIES= (
    #0        1       2        3        4
@@ -50,44 +49,160 @@ def output_fp_to_input_fp(fp, scale, rsize):
 
 class AbstractRaster(object):
 
-    def __init__(self, raster_path):
+    def __init__(self, full_fp, rtype="ortho", cached=True):
         self._queries = []
         self._primitives = []
-        self._scheduler_thread = threading.Thread(target=self._scheduler, daemon=True)
+
+        self._cached = cached
+
+        if cached:
+            self._scheduler_thread = threading.Thread(target=self._cached_scheduler, daemon=True)
+        else:
+            self._scheduler_thread = threading.Thread(target=self._not_cached_scheduler, daemon=True)
+
         self._scheduler_thread.start()
+        self._cv = threading.Condition()
+
+        self._computation_pool = mp.pool.ThreadPool()
+        self._io_pool = mp.pool.ThreadPool()
 
         ds = buzz.DataSource(allow_interpolation=True)
 
-        with ds.open_araster(raster_path).close as raster:
-            self._full_fp = raster.fp.intersection(raster.fp, scale=scale, alignment=(0, 0))
+        self._full_fp = full_fp
+        if cached:
             tile_count = np.ceil(self._full_fp.rsize / 500) 
             self._cache_tiles_fps = self._full_fp.tile_count(*tile_count, boundary_effect='shrink')
-            self._num_bands = len(raster)
-            self._nodata = raster.nodata
-            self._wkt_origin = raster.wkt_origin
+
+        self._num_bands = None # to implement in subclasses
+        self._nodata = None # to implement in subclasses
+        self._wkt_origin = None # to implement in subclasses
 
 
-        self._cache_tile_paths = [
-            str(Path(cache_dir) / dir_names[frozenset({rtype})] / str(str(np.around(fp.tlx, 2)) + "_" + 
-                                                                        str(np.around(fp.tly, 2)) + "_" + 
-                                                                        str(np.around(fp.pxsizex, 2)) + "_" + 
-                                                                        str(np.around(fp.rsizex, 2)))
-            )
-            for fp in self._cache_tiles_fps.flat
-        ]
+        comp_tile_count = np.ceil(self._full_fp.rsize / 500)
+        self._computation_tiles = self._full_fp.tile_count(*comp_tile_count, boundary_effect='shrink')
+
+        if cached:
+            self._double_tiled_structure = DoubleTiledStructure(self._cache_tiles_fps, self._computation_tiles, self._computation_method)
+            self._cache_tiles_met = set()
 
 
-        self._computation_tiles = self._cache_tiles_fps
+    def _emptiest_query(self, query):
+        num = query.produce.verbed.qsize() + len(query.produce.staging)
+        den =query.verbed.maxsize
+        return num/dem
 
-        self._double_tiled_structure = DoubleTiledStructure(self._cache_tiles_fps, self._computation_tiles, self._computation_method)
 
-
-    def _scheduler(self):
+    def _not_cached_scheduler(self):
         while True:
-            pass
+            for query in self._queries:
+                self._to_produce_to_to_compute(query)
+
+            ordered_queries = sorted(self._queries, key=self._emptiest_query)
+
+            for query in ordered_queries:
+                if query.produce.staging and query.produce.staging[0].ready():
+                    query.produce.verbed.put(query.produce.staging.pop(0).get())
+                elif not query.compute.verbed.empty():
 
 
 
+
+    def _cached_scheduler(self):
+        while True:
+            for query in self._queries:
+                self._to_produce_to_to_cache(query)
+                self._build_cache_staging(query)
+
+            ordered_queries = sorted(self._queries, key=self._emptiest_query)
+
+            for query in ordered_queries:
+                if query.produce.staging and query.produce.staging[0].ready():
+                    query.produce.verbed.put(query.produce.staging.pop(0).get())
+                elif not query.compute.verbed.empty():
+
+
+
+    def _get_cache_tile_path(self, cache_tile):
+        path = str(
+            Path(cache_dir) / 
+            dir_names[frozenset({self._rtype})] / 
+            "{:.2f}_{:.2f}_{:.2f}_{}".format(*cache_tile.tl, cache_tile.pxsizex, cache_tile.rsizex)
+        )
+
+        return path
+
+
+    def _build_cache_staging(self, query):
+        for to_cache_out in query.cache_out.to_verb:
+            if to_cache_out in self._cache_tiles_met:
+                query.cache_out.staging.append(self._io_pool.apply_async(self._wait_for_computing, (to_cache_out,)))
+
+            else:
+                self._cache_tiles_met.add(to_cache_out)
+
+                if os.isfile(self._get_cache_tile_path(to_cache_out)):
+                    query.cache_out.staging.append(self._io_pool.apply_async(self._read_cache_data, (to_cache_out,)))
+                else:
+                    query.cache_out.staging.append(self._computation_pool.apply_async(self._compute_cache_data, (to_cache_out,)))
+
+
+
+    def _read_cache_data(self, cache_tile):
+        ds = buzz.DataSource(allow_interpolation=True)
+        filepath = self._get_cache_tile_path(cache_tile)
+
+        with ds.open_araster(filepath).close as src:
+            data = src.get_data(band=-1, fp=cache_tile)
+
+        return data
+
+
+    def _write_cache_data(self, cache_tile, data):
+        filepath = self._get_cache_tile_path(cache_tile)
+        out_proxy = ds.create_araster(filepath, cache_tile, data.dtype, self._num_bands, driver="GTiff", sr=self._resampled_rgba.wkt_origin)
+        out_proxy.set_data(data, band=-1)
+        out_proxy.close()
+        
+        with self._cv:
+            self._cv.notify_all()
+
+
+    def _compute_cache_data(self, cache_tile):
+        data = self._double_tiled_structure.compute_cache_data(to_cache_out)
+        self._io_pool.apply_async(self._write_cache_data, (cache_tile, data))
+        return data
+
+
+    def _wait_for_computing(self, cache_tile):
+        with self._cv:
+            while not os.isfile(self._get_cache_tile_path(cache_tile)):
+                self._cv.wait()
+        return self._read_cache_data(cache_tile)
+
+
+
+    def _to_produce_to_to_cache(self, query):
+        if not query.produce.to_verb:
+            return
+        elif not self._cached:
+            return
+        else:
+            for to_produce in query.produce.to_verb:
+                for cache_tile in self._cache_tiles_fps.flat:
+                    if cache_tile.share_area(to_produce):
+                        query.cache_out.to_verb.append(cache_tile)
+
+
+    def _to_produce_to_to_compute(self, query):
+        if not query.produce.to_verb:
+            return
+        elif self._cached:
+            raise RuntimeError()
+        else:
+            for to_produce in query.produce.to_verb:
+                for computation_tile in self._computation_tiles.flat:
+                    if computation_tile.share_area(to_produce):
+                        query.compute.to_verb.append(computation_tile)
 
 
     def _merge_out_tiles(self, tiles, data, out_fp):

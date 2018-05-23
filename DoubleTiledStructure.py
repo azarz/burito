@@ -1,12 +1,16 @@
 from collections import defaultdict
+import multiprocessing as mp
+import multiprocessing.pool
 
 import numpy as np
 
 class DoubleTiledStructure(object):
 
-    def __init__(self, cache_tiles, computation_tiles, computation_method):
+    def __init__(self, cache_tiles, computation_tiles, computation_method, parallel_tasks=5):
 
         self._computation_method = computation_method
+
+        self._computation_pool = mp.pool.ThreadPool(parallel_tasks)
 
         self._to_compute_dict = defaultdict(set)
         self._computed_dict = defaultdict(set)
@@ -35,12 +39,11 @@ class DoubleTiledStructure(object):
             self._remember(cache_tile, computation_tile)
 
 
-    def get_cache_data(self, cache_tile):
+    def compute_cache_data(self, cache_tile):
 
         assert cache_tile in self._cache_tiles
 
-        for computation_tile in self._to_compute_dict[cache_tile].copy():
-            self._compute_tile(computation_tile)
+        self._computation_pool.map(self._compute_tile, self._to_compute_dict[cache_tile])
 
         first_array = list(self._computed_data.values())[0]
 
