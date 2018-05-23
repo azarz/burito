@@ -1,4 +1,5 @@
 from pathlib import Path
+from collections import defaultdict
 import functools
 import multiprocessing as mp
 import multiprocessing.pool
@@ -49,6 +50,8 @@ DIR_NAMES = {
         frozenset(["ortho","dsm"]): "both"
     }
 
+CACHE_DIR = "./.cache"
+
 
 
 def output_fp_to_input_fp(fp, scale, rsize):
@@ -92,14 +95,14 @@ class AbstractRaster(object):
         self._computation_tiles = self._full_fp.tile_count(*comp_tile_count, boundary_effect='shrink')
 
         if cached:
-            self._double_tiled_structure = DoubleTiledStructure(self._cache_tiles_fps, self._computation_tiles, self._computation_method)
+            self._double_tiled_structure = DoubleTiledStructure(list(self._cache_tiles_fps.flat), list(self._computation_tiles.flat), self._computation_method)
             self._cache_tiles_met = set()
 
 
     def _emptiest_query(self, query):
         num = query.produce.verbed.qsize() + len(query.produce.staging)
-        den =query.verbed.maxsize
-        return num/dem
+        den = query.produce.verbed.maxsize
+        return num/den
 
 
     def _merge_out_tiles(self, tiles, data, out_fp):
@@ -109,6 +112,15 @@ class AbstractRaster(object):
     def fp(self):
         return self._full_fp
 
+    @property
+    def nodata(self):
+        return self._nodata    
+
+    @property
+    def wkt_origin(self):
+        return self._wkt_origin
+    
+
     def _produce_data(self, input_fp):
         raise NotImplementedError('Should be implemented by all subclasses')
 
@@ -117,18 +129,22 @@ class AbstractRaster(object):
 
     def get_multi_data(self, fp_iterable, queue_size=5):
         query = FullQuery(queue_size)
-        query.produce.to_verb = fp_iterable
+        query.produce.to_verb = list(fp_iterable.copy())
 
         self._queries.append(query)
 
         def out_generator():
-            yield query.produce.verbed.get()
+            i=0
+            for fp in fp_iterable:
+                print(i)
+                yield query.produce.verbed.get()
+                i += 1
 
         return out_generator()
 
 
     def get_data(self, fp):
-        return get_multi_data([fp]).get()
+        return next(self.get_multi_data([fp]))
     
 
 
@@ -178,14 +194,14 @@ class AbstractCachedRaster(AbstractRaster):
                     del query.produce.to_verb[0]
 
                 if query.cache_out.staging[0].ready():
-                    query.cache_out.verbed.put(query.compute.cache_out.pop(0).get())
+                    query.cache_out.verbed.put(query.cache_out.staging.pop(0).get())
+
+                if query.cache_out.to_verb:
+                    to_cache_fp = query.cache_out.to_verb.pop(0)
+                    cache_fp_list.append(to_cache_fp)
 
                 if not query.cache_out.verbed.empty():
                     _cache_to_produce_staging(query)
-
-                if query.cache.to_verb:
-                    to_cache_fp = query.cache.to_verb.pop(0)
-                    cache_fp_list.append(to_cache_fp)
 
             time.sleep(1e-2)
 
@@ -209,7 +225,7 @@ class AbstractCachedRaster(AbstractRaster):
 
     def _get_cache_tile_path(self, cache_tile):
         path = str(
-            Path(cache_dir) / 
+            Path(CACHE_DIR) / 
             DIR_NAMES[frozenset({*self._rtype})] / 
             "{:.2f}_{:.2f}_{:.2f}_{}".format(*cache_tile.tl, cache_tile.pxsizex, cache_tile.rsizex)
         )
@@ -238,7 +254,7 @@ class AbstractCachedRaster(AbstractRaster):
             else:
                 self._cache_tiles_met.add(to_cache_out)
 
-                if os.isfile(self._get_cache_tile_path(to_cache_out)):
+                if os.path.isfile(self._get_cache_tile_path(to_cache_out)):
                     query.cache_out.staging.append(self._io_pool.apply_async(self._read_cache_data, (to_cache_out,)))
                 else:
                     query.cache_out.staging.append(self._computation_pool.apply_async(self._compute_cache_data, (to_cache_out,)))
@@ -273,7 +289,7 @@ class AbstractCachedRaster(AbstractRaster):
 
     def _wait_for_computing(self, cache_tile):
         with self._cv:
-            while not os.isfile(self._get_cache_tile_path(cache_tile)):
+            while not os.path.isfile(self._get_cache_tile_path(cache_tile)):
                 self._cv.wait()
         return self._read_cache_data(cache_tile)
 
@@ -322,7 +338,7 @@ class AbstractNotCachedRaster(AbstractRaster):
                     query.produce.verbed.put(query.produce.staging.pop(0).get())
                     del query.produce.to_verb[0]
 
-                if query.compute.staging[0].ready():
+                if query.compute.staging and query.compute.staging[0].ready():
                     query.compute.verbed.put(query.compute.staging.pop(0).get())
 
                 if not query.compute.verbed.empty():
@@ -373,11 +389,11 @@ class AbstractNotCachedRaster(AbstractRaster):
 
 class ResampledRaster(AbstractCachedRaster):
 
-    def __init__(self, raster, scale, rtype, cache_dir="./.cache"):
+    def __init__(self, raster, scale, rtype):
 
         full_fp = raster.fp.intersection(raster.fp, scale=scale, alignment=(0, 0))
     
-        super().__init__(self._full_fp, rtype)
+        super().__init__(full_fp, rtype)
 
         tile_count = np.ceil(self._full_fp.rsize / 500) 
         self._cache_tiles_fps = self._full_fp.tile_count(*tile_count, boundary_effect='shrink')
@@ -386,7 +402,7 @@ class ResampledRaster(AbstractCachedRaster):
         self._wkt_origin = raster.wkt_origin
         self._dtype = raster.dtype
 
-        self._double_tiled_structure = DoubleTiledStructure(self._cache_tiles_fps, self._computation_tiles, self._computation_method)
+        self._double_tiled_structure = DoubleTiledStructure(list(self._cache_tiles_fps.flat), list(self._computation_tiles.flat), self._computation_method)
 
         self._primitives = [raster]
     
@@ -404,8 +420,8 @@ class ResampledRaster(AbstractCachedRaster):
 
 class ResampledOrthoimage(ResampledRaster):
     
-    def __init__(self, path, scale, cache_dir="./.cache"):
-        super().__init__(path, scale, ("ortho",), cache_dir)
+    def __init__(self, path, scale):
+        super().__init__(path, scale, ("ortho",))
 
 
 
@@ -414,8 +430,8 @@ class ResampledOrthoimage(ResampledRaster):
 
 class ResampledDSM(ResampledRaster):
     
-    def __init__(self, path, scale, cache_dir="./.cache"):
-        super().__init__(path, scale, ("dsm",), cache_dir)
+    def __init__(self, path, scale):
+        super().__init__(path, scale, ("dsm",))
 
 
 
@@ -476,14 +492,16 @@ class Slopes(AbstractNotCachedRaster):
 
 class HeatmapRaster(AbstractCachedRaster):
 
-    def __init__(self, model, resampled_rgba, slopes, cache_dir="./.cache"):
+    def __init__(self, model, resampled_rgba, slopes):
 
         max_scale = max(resampled_rgba.fp.scale[0], slopes.fp.scale[0])
         min_scale = min(resampled_rgba.fp.scale[0], slopes.fp.scale[0])
       
-        self._full_fp = resampled_rgba.fp.intersection(slopes.fp, scale=max_scale, alignment=(0, 0))
+        full_fp = resampled_rgba.fp.intersection(slopes.fp, scale=max_scale, alignment=(0, 0))
 
-        super.__init__(self._full_fp, ("dsm", "ortho"))
+        super().__init__(full_fp, ("dsm", "ortho"))
+
+        self._dtype = "float32"
 
         self._model = model
         self._num_bands = LABEL_COUNT
@@ -528,10 +546,10 @@ def main():
     dsm_path = "./dsm_8.00cm.tif"
     model_path = "./18-01-25-15-38-19_1078_1.00000000_0.07799472_aracena.hdf5"
 
-    cache_dir = "./.cache"
+    CACHE_DIR = "./.cache"
 
     for path in DIR_NAMES.values():
-        os.makedirs(str(Path(cache_dir) / path), exist_ok=True)
+        os.makedirs(str(Path(CACHE_DIR) / path), exist_ok=True)
 
     datasrc = buzz.DataSource(allow_interpolation=True)
 
@@ -547,16 +565,15 @@ def main():
     out_fp = out_fp.intersection(out_fp, scale=0.64)
 
 
-
     initial_rgba = datasrc.open_araster(rgb_path)
     initial_dsm = datasrc.open_araster(dsm_path)
 
-    resampled_rgba = ResampledOrthoimage(initial_rgba, 0.64, DIR_NAMES, cache_dir)
-    resampled_dsm = ResampledDSM(initial_dsm, 1.28, DIR_NAMES, cache_dir)
+    resampled_rgba = ResampledOrthoimage(initial_rgba, 0.64)
+    resampled_dsm = ResampledDSM(initial_dsm, 1.28)
 
     slopes = Slopes(resampled_dsm)
 
-    hmr = HeatmapRaster(model, resampled_rgba, slopes, DIR_NAMES)
+    hmr = HeatmapRaster(model, resampled_rgba, slopes)
 
 
     big_display_fp = out_fp
@@ -566,23 +583,19 @@ def main():
     dsm_display_tiles = big_dsm_disp_fp.tile_count(5, 5, boundary_effect='shrink')
 
 
-    out_queue1 = hmr.get_multi_data(display_tiles.flat, 5)
-    out_queue2 = resampled_rgba.get_multi_data(display_tiles.flat, 5)
-    out_queue3 = slopes.get_multi_data(dsm_display_tiles.flat, 5)
+    hm_out = hmr.get_multi_data(display_tiles.flat, 5)
+    rgba_out = resampled_rgba.get_multi_data(display_tiles.flat, 5)
+    slopes_out = slopes.get_multi_data(dsm_display_tiles.flat, 5)
 
-
-    hm_thread = threading.Thread(target=hm_worker)
-    hm_thread.start()    
-    rgb_thread = threading.Thread(target=rgb_worker)
-    rgb_thread.start()    
-    slope_thread = threading.Thread(target=slope_worker)
-    slope_thread.start()
 
     for display_fp, dsm_disp_fp in zip(display_tiles.flat, dsm_display_tiles.flat):
-        # show_many_images(
-        hey =    [out_queue2.get().get(), out_queue3.get().get()[...,0], np.argmax(out_queue1.get().get(), axis=-1)]#, 
-            # extents=[display_fp.extent, dsm_disp_fp.extent, display_fp.extent]
-        # )
+        try:
+            show_many_images(
+                [next(rgba_out), next(slopes_out)[...,0], np.argmax(next(hm_out), axis=-1)], 
+                extents=[display_fp.extent, dsm_disp_fp.extent, display_fp.extent]
+            )
+        except StopIteration:
+            print("ended")
 
 if __name__ == "__main__":
     main()
