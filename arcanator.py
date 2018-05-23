@@ -49,7 +49,7 @@ def output_fp_to_input_fp(fp, scale, rsize):
 
 class AbstractRaster(object):
 
-    def __init__(self, full_fp, rtype, cached):
+    def __init__(self, full_fp, cached):
         self._queries = []
         self._primitives = []
 
@@ -116,7 +116,8 @@ class AbstractRaster(object):
 
 class AbstractCachedRaster(AbstractRaster):
     def __init__(self, full_fp, rtype):
-        super().__init__(full_fp, rtype, True)
+        super().__init__(full_fp, True)
+        self._rtype = rtype
 
 
     def _scheduler(self):
@@ -131,6 +132,7 @@ class AbstractCachedRaster(AbstractRaster):
                 if query.produce.staging and query.produce.staging[0].ready():
                     query.produce.verbed.put(query.produce.staging.pop(0).get())
                 elif not query.compute.verbed.empty():
+
 
 
     def _get_cache_tile_path(self, cache_tile):
@@ -206,8 +208,8 @@ class AbstractCachedRaster(AbstractRaster):
 
 
 class AbstractNotCachedRaster(AbstractRaster):
-    def __init__(self, full_fp, rtype):
-        super().__init__(full_fp, rtype, False)
+    def __init__(self, full_fp):
+        super().__init__(full_fp, False)
 
     def _scheduler(self):
         while True:
@@ -220,6 +222,9 @@ class AbstractNotCachedRaster(AbstractRaster):
                 if query.produce.staging and query.produce.staging[0].ready():
                     query.produce.verbed.put(query.produce.staging.pop(0).get())
                 elif not query.compute.verbed.empty():
+                    computed_fp = query.compute.to_verb.pop(0)
+                    comuted_data = query.compute.verbed.get()
+
 
 
     def _to_produce_to_to_compute(self, query):
@@ -237,7 +242,8 @@ class AbstractNotCachedRaster(AbstractRaster):
 
 
 
-class ResampledRaster(AbstractRaster):
+
+class ResampledRaster(AbstractCachedRaster):
 
     def __init__(self, path, scale, rtype, dir_names, cache_dir="./.cache"):
 
@@ -294,15 +300,26 @@ class ResampledDSM(ResampledRaster):
 
 
 
-class Slopes(AbstractRaster):
+class Slopes(AbstractNotCachedRaster):
     def __init__(self, dsm):
-        self._full_fp = dsm.fp
-        self._parent_dsm = dsm
+        super().__init__(dsm.fp)
+        self._primitives = [dsm]
         self._nodata = dsm.nodata
+        self._num_bands = 2
 
 
-    def get_data(self, input_fp):
-        arr = self._parent_dsm.get_data(input_fp.dilate(1))
+    def _to_produce_to_to_compute(self, query):
+        if not query.produce.to_verb:
+            return
+        elif self._cached:
+            raise RuntimeError()
+        else:
+            to_produce = query.produce.to_verb.pop(0)
+            query.compute.to_verb.append(to_produce)
+
+
+    def _compute_data(self, input_fp):
+        arr = self._collect_data(input_fp.dilate(1))
         nodata_mask = arr == self._nodata
         nodata_mask = ndi.binary_dilation(nodata_mask)
         kernel = [
@@ -326,10 +343,14 @@ class Slopes(AbstractRaster):
         return arr
 
 
+    def _collect_data(self, input_fp):
+        return self._primitives[0].get_data(input_fp.dilate(1))
 
 
 
-class HeatmapRaster(AbstractRaster):
+
+
+class HeatmapRaster(AbstractCachedRaster):
 
     def __init__(self, model, resampled_rgba, slopes, dir_names, cache_dir="./.cache"):
 
