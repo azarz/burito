@@ -49,16 +49,13 @@ def output_fp_to_input_fp(fp, scale, rsize):
 
 class AbstractRaster(object):
 
-    def __init__(self, full_fp, rtype="ortho", cached=True):
+    def __init__(self, full_fp, rtype, cached):
         self._queries = []
         self._primitives = []
 
         self._cached = cached
 
-        if cached:
-            self._scheduler_thread = threading.Thread(target=self._cached_scheduler, daemon=True)
-        else:
-            self._scheduler_thread = threading.Thread(target=self._not_cached_scheduler, daemon=True)
+        self._scheduler_thread = threading.Thread(target=self._scheduler, daemon=True)
 
         self._scheduler_thread.start()
         self._cv = threading.Condition()
@@ -92,22 +89,37 @@ class AbstractRaster(object):
         return num/dem
 
 
-    def _not_cached_scheduler(self):
-        while True:
-            for query in self._queries:
-                self._to_produce_to_to_compute(query)
+    def _merge_out_tiles(self, tiles, data, out_fp):
+        raise NotImplementedError('Should be implemented by all subclasses')
 
-            ordered_queries = sorted(self._queries, key=self._emptiest_query)
+    @property
+    def fp(self):
+        return self._full_fp
 
-            for query in ordered_queries:
-                if query.produce.staging and query.produce.staging[0].ready():
-                    query.produce.verbed.put(query.produce.staging.pop(0).get())
-                elif not query.compute.verbed.empty():
+    def _produce_data(self, input_fp):
+        raise NotImplementedError('Should be implemented by all subclasses')
+
+    def get_multi_data(self, fp_iterable, queue_size=5):
+        query = FullQuery(queue_size)
+        query.produce.to_verb = fp_iterable
+
+        self._queries.append(query)
+        return query.produce.verbed
+
+
+    def get_data(self, fp):
+        return get_multi_data([fp]).get()
+    
 
 
 
 
-    def _cached_scheduler(self):
+class AbstractCachedRaster(AbstractRaster):
+    def __init__(self, full_fp, rtype):
+        super().__init__(full_fp, rtype, True)
+
+
+    def _scheduler(self):
         while True:
             for query in self._queries:
                 self._to_produce_to_to_cache(query)
@@ -121,7 +133,6 @@ class AbstractRaster(object):
                 elif not query.compute.verbed.empty():
 
 
-
     def _get_cache_tile_path(self, cache_tile):
         path = str(
             Path(cache_dir) / 
@@ -130,6 +141,18 @@ class AbstractRaster(object):
         )
 
         return path
+
+
+    def _to_produce_to_to_cache(self, query):
+        if not query.produce.to_verb:
+            return
+        elif not self._cached:
+            return
+        else:
+            for to_produce in query.produce.to_verb:
+                for cache_tile in self._cache_tiles_fps.flat:
+                    if cache_tile.share_area(to_produce):
+                        query.cache_out.to_verb.append(cache_tile)
 
 
     def _build_cache_staging(self, query):
@@ -162,7 +185,7 @@ class AbstractRaster(object):
         out_proxy = ds.create_araster(filepath, cache_tile, data.dtype, self._num_bands, driver="GTiff", sr=self._resampled_rgba.wkt_origin)
         out_proxy.set_data(data, band=-1)
         out_proxy.close()
-        
+
         with self._cv:
             self._cv.notify_all()
 
@@ -181,16 +204,22 @@ class AbstractRaster(object):
 
 
 
-    def _to_produce_to_to_cache(self, query):
-        if not query.produce.to_verb:
-            return
-        elif not self._cached:
-            return
-        else:
-            for to_produce in query.produce.to_verb:
-                for cache_tile in self._cache_tiles_fps.flat:
-                    if cache_tile.share_area(to_produce):
-                        query.cache_out.to_verb.append(cache_tile)
+
+class AbstractNotCachedRaster(AbstractRaster):
+    def __init__(self, full_fp, rtype):
+        super().__init__(full_fp, rtype, False)
+
+    def _scheduler(self):
+        while True:
+            for query in self._queries:
+                self._to_produce_to_to_compute(query)
+
+            ordered_queries = sorted(self._queries, key=self._emptiest_query)
+
+            for query in ordered_queries:
+                if query.produce.staging and query.produce.staging[0].ready():
+                    query.produce.verbed.put(query.produce.staging.pop(0).get())
+                elif not query.compute.verbed.empty():
 
 
     def _to_produce_to_to_compute(self, query):
@@ -205,27 +234,6 @@ class AbstractRaster(object):
                         query.compute.to_verb.append(computation_tile)
 
 
-    def _merge_out_tiles(self, tiles, data, out_fp):
-        raise NotImplementedError('Should be implemented by all subclasses')
-
-    @property
-    def fp(self):
-        return self._full_fp
-
-    def _produce_data(self, input_fp):
-        raise NotImplementedError('Should be implemented by all subclasses')
-
-    def get_multi_data(self, fp_iterable, queue_size=5):
-        query = FullQuery(queue_size)
-        query.produce.to_verb = fp_iterable
-
-        self._queries.append(query)
-        return query.produce.verbed
-
-
-    def get_data(self, fp):
-        return get_multi_data([fp]).get()
-    
 
 
 
