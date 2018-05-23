@@ -39,6 +39,18 @@ for i, cat in enumerate(CATEGORIES):
 
 
 
+# DIR_NAMES = uids_of_paths({
+#         "ortho": rgb_path,
+#         "dsm": dsm_path
+#     })
+DIR_NAMES = {
+        frozenset(["ortho"]): "rgb",
+        frozenset(["dsm"]): "dsm",
+        frozenset(["ortho","dsm"]): "both"
+    }
+
+
+
 def output_fp_to_input_fp(fp, scale, rsize):
     out = buzz.Footprint(tl=fp.tl, size=fp.size, rsize=fp.size/scale)
     padding = (rsize - out.rsizex) / 2
@@ -122,9 +134,25 @@ class AbstractCachedRaster(AbstractRaster):
     def __init__(self, full_fp, rtype):
         super().__init__(full_fp, True)
         self._rtype = rtype
+        self._produce_cache_dict = defaultdict(set)
 
 
     def _scheduler(self):
+
+        self._cache_fp_queue = queue.Queue(5)
+        self._cache_data_queue = queue.Queue(5)
+
+        cache_fp_list = []
+
+        def _cache_to_produce_staging(query):
+            cache_fp = cache_fp_list.pop(0)
+
+            self._cache_fp_queue.put(cache_fp)
+            self._cache_data_queue.put(query.compute.verbed.get())
+
+            self._produce_cache_dict[query.produce.to_verb[0]].discard(cache_fp)
+
+
         while True:
             for query in self._queries:
                 self._to_produce_to_to_cache(query)
@@ -133,17 +161,49 @@ class AbstractCachedRaster(AbstractRaster):
             ordered_queries = sorted(self._queries, key=self._emptiest_query)
 
             for query in ordered_queries:
-                if query.produce.staging and query.produce.staging[0].ready():
+                # If all to_produce was consumed, the query has ended
+                if not query.produce.to_verb:
+                    del query
+                    continue
+
+                if not query.produce.staging:
+                    query.produce.staging.append(self._computation_pool.apply_async(self._produce_data, (query.produce.to_verb[0],)))
+
+                elif query.produce.staging[0].ready():
                     query.produce.verbed.put(query.produce.staging.pop(0).get())
-                elif not query.compute.verbed.empty():
-                    do_things()
+                    del query.produce.to_verb[0]
+
+                if query.cache_out.staging[0].ready():
+                    query.cache_out.verbed.put(query.compute.cache_out.pop(0).get())
+
+                if not query.cache_out.verbed.empty():
+                    _cache_to_produce_staging(query)
+
+                if query.cache.to_verb:
+                    to_cache_fp = query.cache.to_verb.pop(0)
+                    cache_fp_list.append(to_cache_fp)
+
+            time.sleep(1e-2)
+
+
+
+    def _produce_data(self, out_fp):
+        out = np.empty(tuple(out_fp.shape) + (self._num_bands,), dtype="float32")
+
+        while self._produce_cache_dict[out_fp]:
+            cache_fp = self._cache_fp_queue.get()
+            data = self._cache_data_queue.get()
+
+            out[cache_fp.slice_in(out_fp, clip=True)] = data[out_fp.slice_in(cache_fp, clip=True)]
+
+        return out
 
 
 
     def _get_cache_tile_path(self, cache_tile):
         path = str(
             Path(cache_dir) / 
-            dir_names[frozenset({self._rtype})] / 
+            DIR_NAMES[frozenset({*self._rtype})] / 
             "{:.2f}_{:.2f}_{:.2f}_{}".format(*cache_tile.tl, cache_tile.pxsizex, cache_tile.rsizex)
         )
 
@@ -160,6 +220,7 @@ class AbstractCachedRaster(AbstractRaster):
                 for cache_tile in self._cache_tiles_fps.flat:
                     if cache_tile.share_area(to_produce):
                         query.cache_out.to_verb.append(cache_tile)
+                        self._produce_cache_dict[to_produce].add(cache_tile)
 
 
     def _build_cache_staging(self, query):
@@ -227,7 +288,9 @@ class AbstractNotCachedRaster(AbstractRaster):
         computed_fp_list = []
 
         def _computed_to_produce_staging(query):
-            self._computed_fp_queue.put(computed_fp_list.pop(0))
+            computed_fp = computed_fp_list.pop(0)
+
+            self._computed_fp_queue.put(computed_fp)
             self._computed_data_queue.put(query.compute.verbed.get())
 
             self._produce_compute_dict[query.produce.to_verb[0]].discard(computed_fp)
@@ -300,8 +363,8 @@ class AbstractNotCachedRaster(AbstractRaster):
 
 class ResampledRaster(AbstractCachedRaster):
 
-    def __init__(self, path, scale, rtype, dir_names, cache_dir="./.cache"):
-
+    def __init__(self, path, scale, rtype, cache_dir="./.cache"):
+        super().__init__(path, rtype)
     
     
 
@@ -313,8 +376,8 @@ class ResampledRaster(AbstractCachedRaster):
 
 class ResampledOrthoimage(ResampledRaster):
     
-    def __init__(self, path, scale, dir_names, cache_dir="./.cache"):
-        super().__init__(path, scale, "ortho", dir_names, cache_dir)
+    def __init__(self, path, scale, cache_dir="./.cache"):
+        super().__init__(path, scale, ("ortho",), cache_dir)
 
 
     def _merge_out_tiles(self, tiles, data, out_fp):
@@ -337,8 +400,8 @@ class ResampledOrthoimage(ResampledRaster):
 
 class ResampledDSM(ResampledRaster):
     
-    def __init__(self, path, scale, dir_names, cache_dir="./.cache"):
-        super().__init__(path, scale, "dsm", dir_names, cache_dir)
+    def __init__(self, path, scale, cache_dir="./.cache"):
+        super().__init__(path, scale, ("dsm",), cache_dir)
 
     def _merge_out_tiles(self, tiles, data, out_fp):
         out = np.empty(tuple(out_fp.shape), dtype="float32")
@@ -407,7 +470,7 @@ class Slopes(AbstractNotCachedRaster):
 
 class HeatmapRaster(AbstractCachedRaster):
 
-    def __init__(self, model, resampled_rgba, slopes, dir_names, cache_dir="./.cache"):
+    def __init__(self, model, resampled_rgba, slopes, DIR_NAMES, cache_dir="./.cache"):
 
         self._model = model
         self._num_bands = LABEL_COUNT
@@ -430,7 +493,7 @@ class HeatmapRaster(AbstractCachedRaster):
         self._double_tiled_structure = DoubleTiledStructure(list(self._cache_tiles_fps.flat), list(self._computation_tiles.flat), self._computation_method)
 
         self._cache_tile_paths = [
-            str(Path(cache_dir) / dir_names[frozenset({"dsm", "ortho"})] / str(str(np.around(fp.tlx, 2)) + "_" + 
+            str(Path(cache_dir) / DIR_NAMES[frozenset({"dsm", "ortho"})] / str(str(np.around(fp.tlx, 2)) + "_" + 
                                                                         str(np.around(fp.tly, 2)) + "_" + 
                                                                         str(np.around(fp.pxsizex, 2)) + "_" + 
                                                                         str(np.around(fp.rsizex, 2)))
@@ -535,20 +598,9 @@ def main():
     dsm_path = "./dsm_8.00cm.tif"
     model_path = "./18-01-25-15-38-19_1078_1.00000000_0.07799472_aracena.hdf5"
 
-    print("uids...")
-    # dir_names = uids_of_paths({
-    #         "ortho": rgb_path,
-    #         "dsm": dsm_path
-    #     })
-    dir_names = {
-            frozenset(["ortho"]): "rgb",
-            frozenset(["dsm"]): "dsm",
-            frozenset(["ortho","dsm"]): "both"
-        }
-
     cache_dir = "./.cache"
 
-    for path in dir_names.values():
+    for path in DIR_NAMES.values():
         os.makedirs(str(Path(cache_dir) / path), exist_ok=True)
 
     datasrc = buzz.DataSource(allow_interpolation=True)
@@ -569,12 +621,12 @@ def main():
     initial_rgba = datasrc.open_araster(rgb_path)
     initial_dsm = datasrc.open_araster(dsm_path)
 
-    resampled_rgba = ResampledOrthoimage(rgb_path, 0.64, dir_names, cache_dir)
-    resampled_dsm = ResampledDSM(dsm_path, 1.28, dir_names, cache_dir)
+    resampled_rgba = ResampledOrthoimage(rgb_path, 0.64, DIR_NAMES, cache_dir)
+    resampled_dsm = ResampledDSM(dsm_path, 1.28, DIR_NAMES, cache_dir)
 
     slopes = Slopes(resampled_dsm)
 
-    hmr = HeatmapRaster(model, resampled_rgba, slopes, dir_names)
+    hmr = HeatmapRaster(model, resampled_rgba, slopes, DIR_NAMES)
 
 
     big_display_fp = out_fp
