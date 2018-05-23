@@ -158,7 +158,7 @@ class AbstractCachedRaster(AbstractRaster):
 
 
     def _scheduler(self):
-
+        print("_scheduler in")
         self._cache_fp_queue = queue.Queue(5)
         self._cache_data_queue = queue.Queue(5)
 
@@ -166,9 +166,8 @@ class AbstractCachedRaster(AbstractRaster):
 
         def _cache_to_produce_staging(query):
             cache_fp = cache_fp_list.pop(0)
-
             self._cache_fp_queue.put(cache_fp)
-            self._cache_data_queue.put(query.compute.verbed.get())
+            self._cache_data_queue.put(query.cache_out.verbed.get())
 
             self._produce_cache_dict[query.produce.to_verb[0]].discard(cache_fp)
 
@@ -183,24 +182,30 @@ class AbstractCachedRaster(AbstractRaster):
             for query in ordered_queries:
                 # If all to_produce was consumed, the query has ended
                 if not query.produce.to_verb:
+                    print("del query")
                     del query
                     continue
 
                 if not query.produce.staging:
+                    print("no produce staging")
                     query.produce.staging.append(self._computation_pool.apply_async(self._produce_data, (query.produce.to_verb[0],)))
 
                 elif query.produce.staging[0].ready():
+                    print("produce staging rédi")
                     query.produce.verbed.put(query.produce.staging.pop(0).get())
                     del query.produce.to_verb[0]
 
                 if query.cache_out.staging[0].ready():
+                    print("cache staging rédi")
                     query.cache_out.verbed.put(query.cache_out.staging.pop(0).get())
 
                 if query.cache_out.to_verb:
+                    print("to_cache exists")
                     to_cache_fp = query.cache_out.to_verb.pop(0)
                     cache_fp_list.append(to_cache_fp)
 
                 if not query.cache_out.verbed.empty():
+                    print("cached not empty")
                     _cache_to_produce_staging(query)
 
             time.sleep(1e-2)
@@ -282,7 +287,7 @@ class AbstractCachedRaster(AbstractRaster):
 
 
     def _compute_cache_data(self, cache_tile):
-        data = self._double_tiled_structure.compute_cache_data(to_cache_out)
+        data = self._double_tiled_structure.compute_cache_data(cache_tile)
         self._io_pool.apply_async(self._write_cache_data, (cache_tile, data))
         return data
 
@@ -566,15 +571,14 @@ def main():
 
 
     initial_rgba = datasrc.open_araster(rgb_path)
-    initial_dsm = datasrc.open_araster(dsm_path)
+    # initial_dsm = datasrc.open_araster(dsm_path)
 
     resampled_rgba = ResampledOrthoimage(initial_rgba, 0.64)
-    resampled_dsm = ResampledDSM(initial_dsm, 1.28)
+    # resampled_dsm = ResampledDSM(initial_dsm, 1.28)
 
-    slopes = Slopes(resampled_dsm)
+    # slopes = Slopes(resampled_dsm)
 
-    hmr = HeatmapRaster(model, resampled_rgba, slopes)
-
+    # hmr = HeatmapRaster(model, resampled_rgba, slopes)
 
     big_display_fp = out_fp
     big_dsm_disp_fp = big_display_fp.intersection(big_display_fp, scale=1.28, alignment=(0, 0))
@@ -583,17 +587,17 @@ def main():
     dsm_display_tiles = big_dsm_disp_fp.tile_count(5, 5, boundary_effect='shrink')
 
 
-    hm_out = hmr.get_multi_data(display_tiles.flat, 5)
+    # hm_out = hmr.get_multi_data(display_tiles.flat, 5)
     rgba_out = resampled_rgba.get_multi_data(display_tiles.flat, 5)
-    slopes_out = slopes.get_multi_data(dsm_display_tiles.flat, 5)
+    # slopes_out = slopes.get_multi_data(dsm_display_tiles.flat, 5)
 
 
     for display_fp, dsm_disp_fp in zip(display_tiles.flat, dsm_display_tiles.flat):
         try:
-            show_many_images(
-                [next(rgba_out), next(slopes_out)[...,0], np.argmax(next(hm_out), axis=-1)], 
-                extents=[display_fp.extent, dsm_disp_fp.extent, display_fp.extent]
-            )
+            # show_many_images(
+            hey =    [next(rgba_out)]#, next(slopes_out)[...,0], np.argmax(next(hm_out), axis=-1)], 
+                # extents=[display_fp.extent, dsm_disp_fp.extent, display_fp.extent]
+            # )
         except StopIteration:
             print("ended")
 
