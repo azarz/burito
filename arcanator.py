@@ -120,7 +120,11 @@ class AbstractRaster(object):
         query.produce.to_verb = fp_iterable
 
         self._queries.append(query)
-        return query.produce.verbed
+
+        def out_generator():
+            yield query.produce.verbed.get()
+
+        return out_generator()
 
 
     def get_data(self, fp):
@@ -188,7 +192,10 @@ class AbstractCachedRaster(AbstractRaster):
 
 
     def _produce_data(self, out_fp):
-        out = np.empty(tuple(out_fp.shape) + (self._num_bands,), dtype="float32")
+        if self._num_bands == 1:
+            out = np.empty(tuple(out_fp.shape), dtype=self._dtype)
+        else:
+            out = np.empty(tuple(out_fp.shape) + (self._num_bands,), dtype=self._dtype)
 
         while self._produce_cache_dict[out_fp]:
             cache_fp = self._cache_fp_queue.get()
@@ -332,7 +339,10 @@ class AbstractNotCachedRaster(AbstractRaster):
 
 
     def _produce_data(self, out_fp):
-        out = np.empty(tuple(out_fp.shape) + (self._num_bands,), dtype="float32")
+        if self._num_bands == 1:
+            out = np.empty(tuple(out_fp.shape), dtype=self._dtype)
+        else:
+            out = np.empty(tuple(out_fp.shape) + (self._num_bands,), dtype=self._dtype)
 
         while self._produce_compute_dict[out_fp]:
             computed_fp = self._computed_fp_queue.get()
@@ -363,11 +373,29 @@ class AbstractNotCachedRaster(AbstractRaster):
 
 class ResampledRaster(AbstractCachedRaster):
 
-    def __init__(self, path, scale, rtype, cache_dir="./.cache"):
-        super().__init__(path, rtype)
-    
-    
+    def __init__(self, raster, scale, rtype, cache_dir="./.cache"):
 
+        full_fp = raster.fp.intersection(raster.fp, scale=scale, alignment=(0, 0))
+    
+        super().__init__(self._full_fp, rtype)
+
+        tile_count = np.ceil(self._full_fp.rsize / 500) 
+        self._cache_tiles_fps = self._full_fp.tile_count(*tile_count, boundary_effect='shrink')
+        self._num_bands = len(raster)
+        self._nodata = raster.nodata
+        self._wkt_origin = raster.wkt_origin
+        self._dtype = raster.dtype
+
+        self._double_tiled_structure = DoubleTiledStructure(self._cache_tiles_fps, self._computation_tiles, self._computation_method)
+
+        self._primitives = [raster]
+    
+    
+    def _computation_method(self, input_fp):
+        return self._collect_data(input_fp)
+
+    def _collect_data(self, input_fp):
+        return self._primitives[0].get_data(input_fp)
 
 
 
@@ -380,20 +408,6 @@ class ResampledOrthoimage(ResampledRaster):
         super().__init__(path, scale, ("ortho",), cache_dir)
 
 
-    def _merge_out_tiles(self, tiles, data, out_fp):
-
-        out = np.empty(tuple(out_fp.shape) + (self._num_bands,), dtype="uint8")
-
-        for tile, dat  in zip(tiles, data):
-            assert tile.same_grid(out_fp)
-            out[tile.slice_in(out_fp, clip=True)] = dat[out_fp.slice_in(tile, clip=True)]
-
-        return out
-
-
-
-
-
 
 
 
@@ -402,15 +416,6 @@ class ResampledDSM(ResampledRaster):
     
     def __init__(self, path, scale, cache_dir="./.cache"):
         super().__init__(path, scale, ("dsm",), cache_dir)
-
-    def _merge_out_tiles(self, tiles, data, out_fp):
-        out = np.empty(tuple(out_fp.shape), dtype="float32")
-
-        for tile, dat  in zip(tiles, data):
-            assert tile.same_grid(out_fp)
-            out[tile.slice_in(out_fp, clip=True)] = dat[out_fp.slice_in(tile, clip=True)]
-
-        return out
 
 
 
@@ -424,6 +429,7 @@ class Slopes(AbstractNotCachedRaster):
         self._primitives = [dsm]
         self._nodata = dsm.nodata
         self._num_bands = 2
+        self._dtype = "float32"
 
 
     def _to_produce_to_to_compute(self, query):
