@@ -8,6 +8,7 @@ import queue
 import threading
 import hashlib
 import sys
+import time
 
 from keras.models import load_model
 import buzzard as buzz
@@ -99,6 +100,9 @@ class AbstractRaster(object):
     def _produce_data(self, input_fp):
         raise NotImplementedError('Should be implemented by all subclasses')
 
+    def _compute_data(self, input_fp):
+        raise NotImplementedError('Should be implemented by all subclasses')
+
     def get_multi_data(self, fp_iterable, queue_size=5):
         query = FullQuery(queue_size)
         query.produce.to_verb = fp_iterable
@@ -132,6 +136,7 @@ class AbstractCachedRaster(AbstractRaster):
                 if query.produce.staging and query.produce.staging[0].ready():
                     query.produce.verbed.put(query.produce.staging.pop(0).get())
                 elif not query.compute.verbed.empty():
+                    do_things()
 
 
 
@@ -207,11 +212,27 @@ class AbstractCachedRaster(AbstractRaster):
 
 
 
+
+
 class AbstractNotCachedRaster(AbstractRaster):
     def __init__(self, full_fp):
         super().__init__(full_fp, False)
+        self._produce_compute_dict = defaultdict(set)
+
 
     def _scheduler(self):
+        self._computed_fp_queue = queue.Queue(5)
+        self._computed_data_queue = queue.Queue(5)
+
+        computed_fp_list = []
+
+        def _computed_to_produce_staging(query):
+            self._computed_fp_queue.put(computed_fp_list.pop(0))
+            self._computed_data_queue.put(query.compute.verbed.get())
+
+            self._produce_compute_dict[query.produce.to_verb[0]].discard(computed_fp)
+
+
         while True:
             for query in self._queries:
                 self._to_produce_to_to_compute(query)
@@ -219,11 +240,44 @@ class AbstractNotCachedRaster(AbstractRaster):
             ordered_queries = sorted(self._queries, key=self._emptiest_query)
 
             for query in ordered_queries:
-                if query.produce.staging and query.produce.staging[0].ready():
+                # If all to_produce was consumed, the query has ended
+                if not query.produce.to_verb:
+                    del query
+                    continue
+
+                if not query.produce.staging:
+                    query.produce.staging.append(self._computation_pool.apply_async(self._produce_data, (query.produce.to_verb[0],)))
+
+                elif query.produce.staging[0].ready():
                     query.produce.verbed.put(query.produce.staging.pop(0).get())
-                elif not query.compute.verbed.empty():
-                    computed_fp = query.compute.to_verb.pop(0)
-                    comuted_data = query.compute.verbed.get()
+                    del query.produce.to_verb[0]
+
+                if query.compute.staging[0].ready():
+                    query.compute.verbed.put(query.compute.staging.pop(0).get())
+
+                if not query.compute.verbed.empty():
+                    _computed_to_produce_staging(query)
+
+                if query.compute.to_verb:
+                    to_compute_fp = query.compute.to_verb.pop(0)
+                    computed_fp_list.append(to_compute_fp)
+                    query.compute.staging.append(self._computation_pool.apply_async(self._compute_data, (to_compute_fp,)))
+
+            time.sleep(1e-2)
+
+
+
+
+    def _produce_data(self, out_fp):
+        out = np.empty(tuple(out_fp.shape) + (self._num_bands,), dtype="float32")
+
+        while self._produce_compute_dict[out_fp]:
+            computed_fp = self._computed_fp_queue.get()
+            data = self._computed_data_queue.get()
+
+            out[computed_fp.slice_in(out_fp, clip=True)] = data[out_fp.slice_in(computed_fp, clip=True)]
+
+        return out
 
 
 
@@ -237,6 +291,7 @@ class AbstractNotCachedRaster(AbstractRaster):
                 for computation_tile in self._computation_tiles.flat:
                     if computation_tile.share_area(to_produce):
                         query.compute.to_verb.append(computation_tile)
+                        self._produce_compute_dict[to_produce].add(computation_tile)
 
 
 
@@ -344,7 +399,7 @@ class Slopes(AbstractNotCachedRaster):
 
 
     def _collect_data(self, input_fp):
-        return self._primitives[0].get_data(input_fp.dilate(1))
+        return self._primitives[0].get_data(input_fp)
 
 
 
