@@ -131,14 +131,17 @@ class AbstractRaster(object):
         query = FullQuery(queue_size)
         query.produce.to_verb = list(fp_iterable.copy())
 
+        if self._cached:
+            self._to_produce_to_to_cache(query)
+            self._build_cache_staging(query)
+        else:
+            self._to_produce_to_to_compute(query)
+
         self._queries.append(query)
 
         def out_generator():
-            i=0
             for fp in fp_iterable:
-                print(i)
                 yield query.produce.verbed.get()
-                i += 1
 
         return out_generator()
 
@@ -155,60 +158,45 @@ class AbstractCachedRaster(AbstractRaster):
         super().__init__(full_fp, True)
         self._rtype = rtype
         self._produce_cache_dict = defaultdict(set)
+        self._produce_cache_data_dict = defaultdict(lambda: defaultdict(functools.partial(np.ndarray, 0)))
 
 
     def _scheduler(self):
         print("_scheduler in")
-        self._cache_fp_queue = queue.Queue(5)
-        self._cache_data_queue = queue.Queue(5)
 
-        cache_fp_list = []
-
-        def _cache_to_produce_staging(query):
-            cache_fp = cache_fp_list.pop(0)
-            self._cache_fp_queue.put(cache_fp)
-            self._cache_data_queue.put(query.cache_out.verbed.get())
-
-            self._produce_cache_dict[query.produce.to_verb[0]].discard(cache_fp)
-
-
-        while True:
-            for query in self._queries:
-                self._to_produce_to_to_cache(query)
-                self._build_cache_staging(query)
-
+        while True:                
             ordered_queries = sorted(self._queries, key=self._emptiest_query)
 
             for query in ordered_queries:
                 # If all to_produce was consumed, the query has ended
                 if not query.produce.to_verb:
-                    print("del query")
                     del query
                     continue
 
                 if not query.produce.staging:
-                    print("no produce staging")
                     query.produce.staging.append(self._computation_pool.apply_async(self._produce_data, (query.produce.to_verb[0],)))
 
                 elif query.produce.staging[0].ready():
-                    print("produce staging rédi")
                     query.produce.verbed.put(query.produce.staging.pop(0).get())
                     del query.produce.to_verb[0]
 
-                if query.cache_out.staging[0].ready():
-                    print("cache staging rédi")
+                if query.cache_out.staging and query.cache_out.staging[0].ready():
                     query.cache_out.verbed.put(query.cache_out.staging.pop(0).get())
 
-                if query.cache_out.to_verb:
-                    print("to_cache exists")
-                    to_cache_fp = query.cache_out.to_verb.pop(0)
-                    cache_fp_list.append(to_cache_fp)
-
                 if not query.cache_out.verbed.empty():
-                    print("cached not empty")
-                    _cache_to_produce_staging(query)
+                    self._cache_out_to_produce_staging(query)
 
             time.sleep(1e-2)
+
+
+    def _cache_out_to_produce_staging(self, query):
+        cache_data = query.cache_out.verbed.get()
+        cache_fp = query.cache_out.to_verb.pop(0)
+
+        for produce_fp in self._produce_cache_dict.keys():
+            if cache_fp in self._produce_cache_dict[produce_fp]:
+                self._produce_cache_data_dict[produce_fp][cache_fp] = cache_data
+
 
 
 
@@ -218,10 +206,12 @@ class AbstractCachedRaster(AbstractRaster):
         else:
             out = np.empty(tuple(out_fp.shape) + (self._num_bands,), dtype=self._dtype)
 
-        while self._produce_cache_dict[out_fp]:
-            cache_fp = self._cache_fp_queue.get()
-            data = self._cache_data_queue.get()
-
+        for cache_fp in  self._produce_cache_dict[out_fp].copy():
+            while self._produce_cache_data_dict[out_fp][cache_fp].size == 0:
+                pass
+            data = self._produce_cache_data_dict[out_fp][cache_fp]
+            del self._produce_cache_data_dict[out_fp][cache_fp]
+            self._produce_cache_dict[out_fp].discard(cache_fp)
             out[cache_fp.slice_in(out_fp, clip=True)] = data[out_fp.slice_in(cache_fp, clip=True)]
 
         return out
@@ -239,16 +229,12 @@ class AbstractCachedRaster(AbstractRaster):
 
 
     def _to_produce_to_to_cache(self, query):
-        if not query.produce.to_verb:
-            return
-        elif not self._cached:
-            return
-        else:
-            for to_produce in query.produce.to_verb:
-                for cache_tile in self._cache_tiles_fps.flat:
-                    if cache_tile.share_area(to_produce):
+        for to_produce in query.produce.to_verb:
+            for cache_tile in self._cache_tiles_fps.flat:
+                if cache_tile.share_area(to_produce):
+                    if not cache_tile in query.cache_out.to_verb:
                         query.cache_out.to_verb.append(cache_tile)
-                        self._produce_cache_dict[to_produce].add(cache_tile)
+                    self._produce_cache_dict[to_produce].add(cache_tile)
 
 
     def _build_cache_staging(self, query):
@@ -272,12 +258,13 @@ class AbstractCachedRaster(AbstractRaster):
 
         with ds.open_araster(filepath).close as src:
             data = src.get_data(band=-1, fp=cache_tile)
-
         return data
 
 
     def _write_cache_data(self, cache_tile, data):
         filepath = self._get_cache_tile_path(cache_tile)
+        ds = buzz.DataSource(allow_interpolation=True)
+
         out_proxy = ds.create_araster(filepath, cache_tile, data.dtype, self._num_bands, driver="GTiff", sr=self._primitives[0].wkt_origin)
         out_proxy.set_data(data, band=-1)
         out_proxy.close()
@@ -325,9 +312,6 @@ class AbstractNotCachedRaster(AbstractRaster):
 
 
         while True:
-            for query in self._queries:
-                self._to_produce_to_to_compute(query)
-
             ordered_queries = sorted(self._queries, key=self._emptiest_query)
 
             for query in ordered_queries:
@@ -341,7 +325,6 @@ class AbstractNotCachedRaster(AbstractRaster):
 
                 elif query.produce.staging[0].ready():
                     query.produce.verbed.put(query.produce.staging.pop(0).get())
-                    del query.produce.to_verb[0]
 
                 if query.compute.staging and query.compute.staging[0].ready():
                     query.compute.verbed.put(query.compute.staging.pop(0).get())
@@ -397,6 +380,7 @@ class ResampledRaster(AbstractCachedRaster):
     def __init__(self, raster, scale, rtype):
 
         full_fp = raster.fp.intersection(raster.fp, scale=scale, alignment=(0, 0))
+        self._thread_storage = threading.local()
     
         super().__init__(full_fp, rtype)
 
@@ -416,7 +400,17 @@ class ResampledRaster(AbstractCachedRaster):
         return self._collect_data(input_fp)
 
     def _collect_data(self, input_fp):
-        return self._primitives[0].get_data(input_fp)
+        if not hasattr(self._thread_storage, "ds"):
+            ds = buzz.DataSource(allow_interpolation=True)
+            self._thread_storage.ds = ds
+
+        else:
+            ds = self._thread_storage.ds
+
+        with ds.open_araster(self._primitives[0].path).close as prim:
+            data = prim.get_data(input_fp, band=-1)
+
+        return data
 
 
 
@@ -453,14 +447,14 @@ class Slopes(AbstractNotCachedRaster):
         self._dtype = "float32"
 
 
-    def _to_produce_to_to_compute(self, query):
-        if not query.produce.to_verb:
-            return
-        elif self._cached:
-            raise RuntimeError()
-        else:
-            to_produce = query.produce.to_verb.pop(0)
-            query.compute.to_verb.append(to_produce)
+    # def _to_produce_to_to_compute(self, query):
+    #     if not query.produce.to_verb:
+    #         return
+    #     elif self._cached:
+    #         raise RuntimeError()
+    #     else:
+    #         to_produce = query.produce.to_verb.pop(0)
+    #         query.compute.to_verb.append(to_produce)
 
 
     def _compute_data(self, input_fp):
@@ -571,14 +565,14 @@ def main():
 
 
     initial_rgba = datasrc.open_araster(rgb_path)
-    # initial_dsm = datasrc.open_araster(dsm_path)
+    initial_dsm = datasrc.open_araster(dsm_path)
 
     resampled_rgba = ResampledOrthoimage(initial_rgba, 0.64)
-    # resampled_dsm = ResampledDSM(initial_dsm, 1.28)
+    resampled_dsm = ResampledDSM(initial_dsm, 1.28)
 
-    # slopes = Slopes(resampled_dsm)
+    slopes = Slopes(resampled_dsm)
 
-    # hmr = HeatmapRaster(model, resampled_rgba, slopes)
+    hmr = HeatmapRaster(model, resampled_rgba, slopes)
 
     big_display_fp = out_fp
     big_dsm_disp_fp = big_display_fp.intersection(big_display_fp, scale=1.28, alignment=(0, 0))
@@ -587,15 +581,15 @@ def main():
     dsm_display_tiles = big_dsm_disp_fp.tile_count(5, 5, boundary_effect='shrink')
 
 
-    # hm_out = hmr.get_multi_data(display_tiles.flat, 5)
+    hm_out = hmr.get_multi_data(display_tiles.flat, 5)
     rgba_out = resampled_rgba.get_multi_data(display_tiles.flat, 5)
-    # slopes_out = slopes.get_multi_data(dsm_display_tiles.flat, 5)
+    slopes_out = slopes.get_multi_data(dsm_display_tiles.flat, 5)
 
 
     for display_fp, dsm_disp_fp in zip(display_tiles.flat, dsm_display_tiles.flat):
         try:
             # show_many_images(
-            hey =    [next(rgba_out)]#, next(slopes_out)[...,0], np.argmax(next(hm_out), axis=-1)], 
+            hey =    [next(rgba_out), next(slopes_out)[...,0], np.argmax(next(hm_out), axis=-1)], 
                 # extents=[display_fp.extent, dsm_disp_fp.extent, display_fp.extent]
             # )
         except StopIteration:

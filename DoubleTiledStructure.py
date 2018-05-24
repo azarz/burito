@@ -47,11 +47,14 @@ class DoubleTiledStructure(object):
 
         first_array = list(self._computed_data.values())[0]
 
-        out = np.empty(tuple(cache_tile.shape) + (first_array.shape[-1],), dtype=first_array.dtype)
+        if len(first_array.shape) > 2:
+            out = np.empty(tuple(cache_tile.shape) + (first_array.shape[-1],), dtype=first_array.dtype)
+        else:
+            out = np.empty(tuple(cache_tile.shape), dtype=first_array.dtype)
 
         del first_array
 
-        for computation_tile in self._computed_dict[cache_tile]:
+        for computation_tile in self._computed_dict[cache_tile].copy():
             dat = self._computed_data[computation_tile]
             out[computation_tile.slice_in(cache_tile, clip=True)] = dat[cache_tile.slice_in(computation_tile, clip=True)]
 
