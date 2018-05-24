@@ -464,7 +464,17 @@ class Slopes(AbstractNotCachedRaster):
         self._primitives = [dsm]
         self._nodata = dsm.nodata
         self._num_bands = 2
-        self._dtype = "float32"
+        self._dtype = "float32"    
+
+    def _to_produce_to_to_compute(self, query):
+        if not query.produce.to_verb:
+            return
+        elif self._cached:
+            raise RuntimeError()
+        else:
+            for to_produce in query.produce.to_verb:
+                query.compute.to_verb.append(to_produce)
+                self._produce_compute_dict[to_produce].add(to_produce)
 
 
     def _compute_data(self, input_fp):
