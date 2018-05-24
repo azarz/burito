@@ -1,3 +1,3 @@
-# airwarare-internship
+# airware-internship
 
-(please don't mind the typo)
+## 1st part: arcanator
