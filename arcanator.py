@@ -158,6 +158,7 @@ class AbstractCachedRaster(AbstractRaster):
 
 
     def _scheduler(self):
+        print("hello")
         while True:                
             ordered_queries = sorted(self._queries, key=self._emptiest_query)
 
@@ -301,7 +302,6 @@ class AbstractNotCachedRaster(AbstractRaster):
 
 
     def _scheduler(self):
-        print("_scheduler in")
         while True:
             ordered_queries = sorted(self._queries, key=self._emptiest_query)
 
@@ -310,26 +310,21 @@ class AbstractNotCachedRaster(AbstractRaster):
 
                 # If all to_produce was consumed, the query has ended
                 if not query.produce.to_verb:
-                    print("del query")
                     self._queries.remove(query)
                     del query
                     continue
 
                 if not query.produce.staging:
-                    print("not query produce staging")
                     query.produce.staging.append(self._computation_pool.apply_async(self._produce_data, (query.produce.to_verb[0],)))
 
                 elif query.produce.staging[0].ready():
-                    print("produce rédi")
                     query.produce.verbed.put(query.produce.staging.pop(0).get())
                     del query.produce.to_verb[0]
 
                 if query.compute.staging and query.compute.staging[0].ready():
-                    print("compute rédi")
                     query.compute.verbed.put(query.compute.staging.pop(0).get())
 
                 if not query.compute.verbed.empty():
-                    print("compute not empty")
                     self._computed_to_produce_staging(query)
 
             time.sleep(1e-2)
@@ -347,7 +342,6 @@ class AbstractNotCachedRaster(AbstractRaster):
 
 
     def _produce_data(self, out_fp):
-        print("VINAIGRE DE XERES")
         if self._num_bands == 1:
             out = np.empty(tuple(out_fp.shape), dtype=self._dtype)
         else:
@@ -391,6 +385,8 @@ class AbstractNotCachedRaster(AbstractRaster):
 
     def _prepare_query(self, query):
         self._to_produce_to_to_compute(query)
+
+
 
 
 
@@ -445,8 +441,6 @@ class ResampledOrthoimage(ResampledRaster):
 
 
 
-
-
 class ResampledDSM(ResampledRaster):
     
     def __init__(self, path, scale):
@@ -465,6 +459,7 @@ class Slopes(AbstractNotCachedRaster):
         self._nodata = dsm.nodata
         self._num_bands = 2
         self._dtype = "float32"    
+
 
     def _to_produce_to_to_compute(self, query):
         if not query.produce.to_verb:
@@ -519,6 +514,7 @@ class HeatmapRaster(AbstractCachedRaster):
         full_fp = resampled_rgba.fp.intersection(slopes.fp, scale=max_scale, alignment=(0, 0))
 
         super().__init__(full_fp, ("dsm", "ortho"))
+        self._computation_pool = mp.pool.ThreadPool(5)
 
         self._dtype = "float32"
 
@@ -534,11 +530,11 @@ class HeatmapRaster(AbstractCachedRaster):
         tile_count = np.ceil(self._full_fp.rsize / 500) 
         self._cache_tiles_fps = self._full_fp.tile_count(*tile_count, boundary_effect='shrink')
 
-        self._double_tiled_structure = DoubleTiledStructure(list(self._cache_tiles_fps.flat), list(self._computation_tiles.flat), self._computation_method, 1)
+        self._double_tiled_structure = DoubleTiledStructure(list(self._cache_tiles_fps.flat), list(self._computation_tiles.flat), self._computation_method)
+        self._lock = threading.Lock()
 
 
     def _computation_method(self, computation_tile):
-
         rgba_tile = output_fp_to_input_fp(computation_tile, 0.64, self._model.get_layer("rgb").input_shape[1])
         dsm_tile = output_fp_to_input_fp(computation_tile, 1.28, self._model.get_layer("slopes").input_shape[1])
 
@@ -550,9 +546,18 @@ class HeatmapRaster(AbstractCachedRaster):
 
         slopes = slope_data / 45 - 1
 
-        prediction = self._model.predict([rgb[np.newaxis], slopes[np.newaxis]])[0]
+        with self._lock:
+            prediction = self._model.predict([rgb[np.newaxis], slopes[np.newaxis]])[0]
+        print("I LIKE TRAINS!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!")
 
         return prediction
+
+
+    def _collect_rgba_data(self, input_fp):
+        self._primitives[0].get_data(input_fp)
+
+    def _collect_slope_data(self, input_fp):
+        self._primitives[0].get_data(input_fp)
 
 
 
@@ -587,12 +592,12 @@ def main():
     initial_rgba = datasrc.open_araster(rgb_path)
     initial_dsm = datasrc.open_araster(dsm_path)
 
-    # resampled_rgba = ResampledOrthoimage(initial_rgba, 0.64)
+    resampled_rgba = ResampledOrthoimage(initial_rgba, 0.64)
     resampled_dsm = ResampledDSM(initial_dsm, 1.28)
 
     slopes = Slopes(resampled_dsm)
 
-    # hmr = HeatmapRaster(model, resampled_rgba, slopes)
+    hmr = HeatmapRaster(model, resampled_rgba, slopes)
 
     big_display_fp = out_fp
     big_dsm_disp_fp = big_display_fp.intersection(big_display_fp, scale=1.28, alignment=(0, 0))
@@ -601,18 +606,17 @@ def main():
     dsm_display_tiles = big_dsm_disp_fp.tile_count(5, 5, boundary_effect='shrink')
 
 
-    # hm_out = hmr.get_multi_data(display_tiles.flat, 5)
-    # rgba_out = resampled_rgba.get_multi_data(display_tiles.flat, 5)
+    hm_out = hmr.get_multi_data(display_tiles.flat, 5)
+    rgba_out = resampled_rgba.get_multi_data(display_tiles.flat, 5)
     slopes_out = slopes.get_multi_data(dsm_display_tiles.flat, 5)
 
 
     for display_fp, dsm_disp_fp in zip(display_tiles.flat, dsm_display_tiles.flat):
         try:
+            next(hm_out)
             # show_many_images(
-                #[next(rgba_out), 
-            hey = next(slopes_out)[...,0]
-            #, np.argmax(next(hm_out), axis=-1)], 
-                # extents=[display_fp.extent, dsm_disp_fp.extent, display_fp.extent]
+            #     [next(rgba_out), next(slopes_out)[...,0],np.argmax(next(hm_out), axis=-1)], 
+            #     extents=[display_fp.extent, dsm_disp_fp.extent, display_fp.extent]
             # )
         except StopIteration:
             print("ended")
