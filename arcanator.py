@@ -131,12 +131,8 @@ class AbstractRaster(object):
         query = FullQuery(queue_size)
         query.produce.to_verb = list(fp_iterable.copy())
 
-        if self._cached:
-            self._to_produce_to_to_cache(query)
-            self._build_cache_staging(query)
-        else:
-            self._to_produce_to_to_compute(query)
-
+        self._prepare_query(query)
+ 
         self._queries.append(query)
 
         def out_generator():
@@ -162,14 +158,13 @@ class AbstractCachedRaster(AbstractRaster):
 
 
     def _scheduler(self):
-        print("_scheduler in")
-
         while True:                
             ordered_queries = sorted(self._queries, key=self._emptiest_query)
 
             for query in ordered_queries:
                 # If all to_produce was consumed, the query has ended
                 if not query.produce.to_verb:
+                    self._queries.remove(query)
                     del query
                     continue
 
@@ -209,8 +204,10 @@ class AbstractCachedRaster(AbstractRaster):
         for cache_fp in  self._produce_cache_dict[out_fp].copy():
             while self._produce_cache_data_dict[out_fp][cache_fp].size == 0:
                 pass
+
             data = self._produce_cache_data_dict[out_fp][cache_fp]
             del self._produce_cache_data_dict[out_fp][cache_fp]
+
             self._produce_cache_dict[out_fp].discard(cache_fp)
             out[cache_fp.slice_in(out_fp, clip=True)] = data[out_fp.slice_in(cache_fp, clip=True)]
 
@@ -286,6 +283,11 @@ class AbstractCachedRaster(AbstractRaster):
         return self._read_cache_data(cache_tile)
 
 
+    def _prepare_query(self, query):
+        self._to_produce_to_to_cache(query)
+        self._build_cache_staging(query)
+
+
 
 
 
@@ -294,64 +296,72 @@ class AbstractNotCachedRaster(AbstractRaster):
     def __init__(self, full_fp):
         super().__init__(full_fp, False)
         self._produce_compute_dict = defaultdict(set)
+        self._produce_compute_data_dict = defaultdict(lambda: defaultdict(functools.partial(np.ndarray, 0)))
+        self._consumed_fps= []
 
 
     def _scheduler(self):
-        self._computed_fp_queue = queue.Queue(5)
-        self._computed_data_queue = queue.Queue(5)
-
-        computed_fp_list = []
-
-        def _computed_to_produce_staging(query):
-            computed_fp = computed_fp_list.pop(0)
-
-            self._computed_fp_queue.put(computed_fp)
-            self._computed_data_queue.put(query.compute.verbed.get())
-
-            self._produce_compute_dict[query.produce.to_verb[0]].discard(computed_fp)
-
-
+        print("_scheduler in")
         while True:
             ordered_queries = sorted(self._queries, key=self._emptiest_query)
 
             for query in ordered_queries:
+                self._consume_compute_fp(query)
+
                 # If all to_produce was consumed, the query has ended
                 if not query.produce.to_verb:
+                    print("del query")
+                    self._queries.remove(query)
                     del query
                     continue
 
                 if not query.produce.staging:
+                    print("not query produce staging")
                     query.produce.staging.append(self._computation_pool.apply_async(self._produce_data, (query.produce.to_verb[0],)))
 
                 elif query.produce.staging[0].ready():
+                    print("produce rédi")
                     query.produce.verbed.put(query.produce.staging.pop(0).get())
+                    del query.produce.to_verb[0]
 
                 if query.compute.staging and query.compute.staging[0].ready():
+                    print("compute rédi")
                     query.compute.verbed.put(query.compute.staging.pop(0).get())
 
                 if not query.compute.verbed.empty():
-                    _computed_to_produce_staging(query)
-
-                if query.compute.to_verb:
-                    to_compute_fp = query.compute.to_verb.pop(0)
-                    computed_fp_list.append(to_compute_fp)
-                    query.compute.staging.append(self._computation_pool.apply_async(self._compute_data, (to_compute_fp,)))
+                    print("compute not empty")
+                    self._computed_to_produce_staging(query)
 
             time.sleep(1e-2)
 
 
 
+    def _computed_to_produce_staging(self, query):
+        computed_data = query.compute.verbed.get()
+        computed_fp = self._consumed_fps.pop(0)
+
+        for produce_fp in self._produce_compute_dict.keys():
+            if computed_fp in self._produce_compute_dict[produce_fp]:
+                self._produce_compute_data_dict[produce_fp][computed_fp] = computed_data
+
+
 
     def _produce_data(self, out_fp):
+        print("VINAIGRE DE XERES")
         if self._num_bands == 1:
             out = np.empty(tuple(out_fp.shape), dtype=self._dtype)
         else:
             out = np.empty(tuple(out_fp.shape) + (self._num_bands,), dtype=self._dtype)
 
-        while self._produce_compute_dict[out_fp]:
-            computed_fp = self._computed_fp_queue.get()
-            data = self._computed_data_queue.get()
 
+        for computed_fp in  self._produce_compute_dict[out_fp].copy():
+            while self._produce_compute_data_dict[out_fp][computed_fp].size == 0:
+                time.sleep(1e-2)
+
+            data = self._produce_compute_data_dict[out_fp][computed_fp]
+            del self._produce_compute_data_dict[out_fp][computed_fp]
+
+            self._produce_compute_dict[out_fp].discard(computed_fp)
             out[computed_fp.slice_in(out_fp, clip=True)] = data[out_fp.slice_in(computed_fp, clip=True)]
 
         return out
@@ -371,6 +381,16 @@ class AbstractNotCachedRaster(AbstractRaster):
                         self._produce_compute_dict[to_produce].add(computation_tile)
 
 
+    def _consume_compute_fp(self, query):
+        if not query.compute.to_verb:
+            return
+        to_compute_fp = query.compute.to_verb.pop(0)
+        self._consumed_fps.append(to_compute_fp)
+        query.compute.staging.append(self._computation_pool.apply_async(self._compute_data, (to_compute_fp,)))
+
+
+    def _prepare_query(self, query):
+        self._to_produce_to_to_compute(query)
 
 
 
@@ -445,16 +465,6 @@ class Slopes(AbstractNotCachedRaster):
         self._nodata = dsm.nodata
         self._num_bands = 2
         self._dtype = "float32"
-
-
-    # def _to_produce_to_to_compute(self, query):
-    #     if not query.produce.to_verb:
-    #         return
-    #     elif self._cached:
-    #         raise RuntimeError()
-    #     else:
-    #         to_produce = query.produce.to_verb.pop(0)
-    #         query.compute.to_verb.append(to_produce)
 
 
     def _compute_data(self, input_fp):
@@ -567,12 +577,12 @@ def main():
     initial_rgba = datasrc.open_araster(rgb_path)
     initial_dsm = datasrc.open_araster(dsm_path)
 
-    resampled_rgba = ResampledOrthoimage(initial_rgba, 0.64)
+    # resampled_rgba = ResampledOrthoimage(initial_rgba, 0.64)
     resampled_dsm = ResampledDSM(initial_dsm, 1.28)
 
     slopes = Slopes(resampled_dsm)
 
-    hmr = HeatmapRaster(model, resampled_rgba, slopes)
+    # hmr = HeatmapRaster(model, resampled_rgba, slopes)
 
     big_display_fp = out_fp
     big_dsm_disp_fp = big_display_fp.intersection(big_display_fp, scale=1.28, alignment=(0, 0))
@@ -581,15 +591,17 @@ def main():
     dsm_display_tiles = big_dsm_disp_fp.tile_count(5, 5, boundary_effect='shrink')
 
 
-    hm_out = hmr.get_multi_data(display_tiles.flat, 5)
-    rgba_out = resampled_rgba.get_multi_data(display_tiles.flat, 5)
+    # hm_out = hmr.get_multi_data(display_tiles.flat, 5)
+    # rgba_out = resampled_rgba.get_multi_data(display_tiles.flat, 5)
     slopes_out = slopes.get_multi_data(dsm_display_tiles.flat, 5)
 
 
     for display_fp, dsm_disp_fp in zip(display_tiles.flat, dsm_display_tiles.flat):
         try:
             # show_many_images(
-            hey =    [next(rgba_out), next(slopes_out)[...,0], np.argmax(next(hm_out), axis=-1)], 
+                #[next(rgba_out), 
+            hey = next(slopes_out)[...,0]
+            #, np.argmax(next(hm_out), axis=-1)], 
                 # extents=[display_fp.extent, dsm_disp_fp.extent, display_fp.extent]
             # )
         except StopIteration:
