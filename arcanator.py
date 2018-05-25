@@ -92,7 +92,7 @@ class AbstractRaster(object):
         self._computation_tiles = self._full_fp.tile_count(*comp_tile_count, boundary_effect='shrink')            
 
 
-    def _emptiest_query(self, query):
+    def _pressure_ratio(self, query):
         num = query.produce.verbed.qsize() + len(query.produce.staging)
         den = query.produce.verbed.maxsize
         return num/den
@@ -130,18 +130,7 @@ class AbstractRaster(object):
 
     def get_multi_data(self, fp_iterable, queue_size=5):
         query = FullQuery(queue_size)
-        to_produce_unscaled = list(fp_iterable.copy())
-        to_produce = []
-
-        for fp in to_produce_unscaled:
-            rescaled_fp = fp.intersection(self.fp, scale=self.fp.scale, alignment=(0, 0))
-            try:
-                assert np.array_equal(fp.shape, rescaled_fp.shape)
-            except AssertionError:
-                print(fp.shape, rescaled_fp.shape)
-                print(fp.scale, rescaled_fp.scale)
-                raise RuntimeError
-            to_produce.append(rescaled_fp)
+        to_produce = list(fp_iterable.copy())
 
         query.produce.to_verb = to_produce
 
@@ -184,12 +173,12 @@ class AbstractCachedRaster(AbstractRaster):
     def _scheduler(self):
         print(self.__class__.__name__, " scheduler in ", threading.currentThread().getName())
         while True:                
-            ordered_queries = sorted(self._queries, key=self._emptiest_query)
+            ordered_queries = sorted(self._queries, key=self._pressure_ratio)
 
             for query in ordered_queries:
                 # print(self.__class__.__name__, "  ", query,  " queues:   ", threading.currentThread().getName())
                 # print("       produced:  ", query.produce.verbed.qsize())
-                # print("       cached:  ", query.cache_out.verbed.qsize())
+                # print("       cached:  ", query.uncache.verbed.qsize())
                 # print("       computed:  ", query.compute.verbed.qsize())
                 # print("       collected:  ", query.collect.verbed.qsize())
 
@@ -207,18 +196,18 @@ class AbstractCachedRaster(AbstractRaster):
                     query.produce.verbed.put(query.produce.staging.pop(0).get())
                     del query.produce.to_verb[0]
 
-                if query.cache_out.staging and query.cache_out.staging[0].ready():
-                    query.cache_out.verbed.put(query.cache_out.staging.pop(0).get())
+                if query.uncache.staging and query.uncache.staging[0].ready():
+                    query.uncache.verbed.put(query.uncache.staging.pop(0).get())
 
-                if not query.cache_out.verbed.empty():
-                    self._cache_out_to_produce_staging(query)
+                if not query.uncache.verbed.empty():
+                    self._uncache_to_produce_staging(query)
 
             time.sleep(1e-2)
 
 
-    def _cache_out_to_produce_staging(self, query):
-        cache_data = query.cache_out.verbed.get()
-        cache_fp = query.cache_out.to_verb.pop(0)
+    def _uncache_to_produce_staging(self, query):
+        cache_data = query.uncache.verbed.get()
+        cache_fp = query.uncache.to_verb.pop(0)
 
         for produce_fp in self._produce_cache_dict.keys():
             if cache_fp in self._produce_cache_dict[produce_fp]:
@@ -262,23 +251,23 @@ class AbstractCachedRaster(AbstractRaster):
         for to_produce in query.produce.to_verb:
             for cache_tile in self._cache_tiles_fps.flat:
                 if cache_tile.share_area(to_produce):
-                    if not cache_tile in query.cache_out.to_verb:
-                        query.cache_out.to_verb.append(cache_tile)
+                    if not cache_tile in query.uncache.to_verb:
+                        query.uncache.to_verb.append(cache_tile)
                     self._produce_cache_dict[to_produce].add(cache_tile)
 
 
     def _build_cache_staging(self, query):
-        for to_cache_out in query.cache_out.to_verb:
-            if to_cache_out in self._cache_tiles_met:
-                query.cache_out.staging.append(self._io_pool.apply_async(self._wait_for_computing, (to_cache_out,)))
+        for to_uncache in query.uncache.to_verb:
+            if to_uncache in self._cache_tiles_met:
+                query.uncache.staging.append(self._io_pool.apply_async(self._wait_for_computing, (to_uncache,)))
 
             else:
-                self._cache_tiles_met.add(to_cache_out)
+                self._cache_tiles_met.add(to_uncache)
 
-                if os.path.isfile(self._get_cache_tile_path(to_cache_out)):
-                    query.cache_out.staging.append(self._io_pool.apply_async(self._read_cache_data, (to_cache_out,)))
+                if os.path.isfile(self._get_cache_tile_path(to_uncache)):
+                    query.uncache.staging.append(self._io_pool.apply_async(self._read_cache_data, (to_uncache,)))
                 else:
-                    query.cache_out.staging.append(self._computation_pool.apply_async(self._compute_cache_data, (to_cache_out,)))
+                    query.uncache.staging.append(self._computation_pool.apply_async(self._compute_cache_data, (to_uncache,)))
 
 
 
@@ -291,7 +280,7 @@ class AbstractCachedRaster(AbstractRaster):
         return data
 
 
-    def _write_cache_data(self, cache_tile, data):
+    def _write_cache_data(self):
         print(self.__class__.__name__, " writing in ", threading.currentThread().getName())
         filepath = self._get_cache_tile_path(cache_tile)
         ds = buzz.DataSource(allow_interpolation=True)
@@ -307,14 +296,18 @@ class AbstractCachedRaster(AbstractRaster):
     def _compute_cache_data(self, cache_tile):
         data = self._double_tiled_structure.compute_cache_data(cache_tile)
         print(self.__class__.__name__, " writing data ", threading.currentThread().getName())
-        self._io_pool.apply_async(self._write_cache_data, (cache_tile, data))
+        # self._write_cache_data(cache_tile, data)
+        self._io_pool.apply_async(self._write_cache_data).get()
+        print("7878787878787878787")
         return data
 
 
     def _wait_for_computing(self, cache_tile):
         with self._cv:
+            print("already met")
             while not os.path.isfile(self._get_cache_tile_path(cache_tile)):
                 self._cv.wait()
+        print("while out")
         return self._read_cache_data(cache_tile)
 
 
@@ -338,12 +331,12 @@ class AbstractNotCachedRaster(AbstractRaster):
     def _scheduler(self):
         print(self.__class__.__name__, " scheduler in ", threading.currentThread().getName())
         while True:
-            ordered_queries = sorted(self._queries, key=self._emptiest_query)
+            ordered_queries = sorted(self._queries, key=self._pressure_ratio)
 
             for query in ordered_queries:
                 # print(self.__class__.__name__, "  ", query,  " queues:   ", threading.currentThread().getName())
                 # print("       produced:  ", query.produce.verbed.qsize())
-                # print("       cached:  ", query.cache_out.verbed.qsize())
+                # print("       cached:  ", query.uncache.verbed.qsize())
                 # print("       computed:  ", query.compute.verbed.qsize())
                 # print("       collected:  ", query.collect.verbed.qsize())
                 self._consume_compute_fp(query)
@@ -655,13 +648,14 @@ def main():
 
 
     # hm_out = hmr.get_multi_data(display_tiles.flat, 5)
-    rgba_out = resampled_rgba.get_multi_data(display_tiles.flat, 5)
-    # slopes_out = slopes.get_multi_data(dsm_display_tiles.flat, 5)
+    # rgba_out = resampled_rgba.get_multi_data(display_tiles.flat, 5)
+    # dsm_out = resampled_dsm.get_multi_data(dsm_display_tiles.flat, 5)
+    slopes_out = slopes.get_multi_data(dsm_display_tiles.flat, 5)
 
 
     for display_fp, dsm_disp_fp in zip(display_tiles.flat, dsm_display_tiles.flat):
         try:
-            next(rgba_out)
+            next(slopes_out)
             # next(slopes_out)
             # show_many_images(
             #     [next(rgba_out), next(slopes_out)[...,0],np.argmax(next(hm_out), axis=-1)], 
