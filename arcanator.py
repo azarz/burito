@@ -134,7 +134,14 @@ class AbstractRaster(object):
         to_produce = []
 
         for fp in to_produce_unscaled:
-            to_produce.append(fp.intersection(self.fp, scale=self.fp.scale, alignment=(0, 0)))
+            rescaled_fp = fp.intersection(self.fp, scale=self.fp.scale, alignment=(0, 0))
+            try:
+                assert np.array_equal(fp.shape, rescaled_fp.shape)
+            except AssertionError:
+                print(fp.shape, rescaled_fp.shape)
+                print(fp.scale, rescaled_fp.scale)
+                raise RuntimeError
+            to_produce.append(rescaled_fp)
 
         query.produce.to_verb = to_produce
 
@@ -144,7 +151,9 @@ class AbstractRaster(object):
 
         def out_generator():
             for fp in fp_iterable:
-                yield query.produce.verbed.get()
+                result = query.produce.verbed.get()
+                assert np.array_equal(fp.shape, result.shape[0:2])
+                yield result
 
         return out_generator()
 
@@ -366,6 +375,8 @@ class AbstractNotCachedRaster(AbstractRaster):
         computed_data = query.compute.verbed.get()
         computed_fp = self._consumed_fps.pop(0)
 
+        assert np.array_equal(computed_fp.shape, computed_data.shape[0:2])
+
         for produce_fp in self._produce_compute_dict.keys():
             if computed_fp in self._produce_compute_dict[produce_fp]:
                 self._produce_compute_data_dict[produce_fp][computed_fp] = computed_data
@@ -387,9 +398,10 @@ class AbstractNotCachedRaster(AbstractRaster):
             del self._produce_compute_data_dict[out_fp][computed_fp]
 
             self._produce_compute_dict[out_fp].discard(computed_fp)
-            assert out_fp.same_grid(cache_fp)
+            assert out_fp.same_grid(computed_fp)
             out[computed_fp.slice_in(out_fp, clip=True)] = data[out_fp.slice_in(computed_fp, clip=True)]
 
+        assert np.array_equal(out_fp.shape, out.shape[0:2])
         return out
 
 
@@ -462,6 +474,7 @@ class ResampledRaster(AbstractCachedRaster):
             with ds.open_araster(self._primitives[0].path).close as prim:
                 data = prim.get_data(input_fp, band=-1)
 
+        assert np.array_equal(input_fp.shape, data.shape[0:2])
         return data
 
 
@@ -628,9 +641,9 @@ def main():
     initial_dsm = datasrc.open_araster(dsm_path)
 
     resampled_rgba = ResampledOrthoimage(initial_rgba, 0.64)
-    # resampled_dsm = ResampledDSM(initial_dsm, 1.28)
+    resampled_dsm = ResampledDSM(initial_dsm, 1.28)
 
-    # slopes = Slopes(resampled_dsm)
+    slopes = Slopes(resampled_dsm)
 
     # hmr = HeatmapRaster(model, resampled_rgba, slopes)
 
@@ -643,7 +656,7 @@ def main():
 
     # hm_out = hmr.get_multi_data(display_tiles.flat, 5)
     rgba_out = resampled_rgba.get_multi_data(display_tiles.flat, 5)
-    slopes_out = slopes.get_multi_data(dsm_display_tiles.flat, 5)
+    # slopes_out = slopes.get_multi_data(dsm_display_tiles.flat, 5)
 
 
     for display_fp, dsm_disp_fp in zip(display_tiles.flat, dsm_display_tiles.flat):
