@@ -81,21 +81,15 @@ class AbstractRaster(object):
         ds = buzz.DataSource(allow_interpolation=True)
 
         self._full_fp = full_fp
-        if cached:
-            tile_count = np.ceil(self._full_fp.rsize / 500) 
-            self._cache_tiles_fps = self._full_fp.tile_count(*tile_count, boundary_effect='shrink')
 
         self._num_bands = None # to implement in subclasses
         self._nodata = None # to implement in subclasses
         self._wkt_origin = None # to implement in subclasses
+        self._dtype = None # to implement in subclasses
 
 
         comp_tile_count = np.ceil(self._full_fp.rsize / 500)
-        self._computation_tiles = self._full_fp.tile_count(*comp_tile_count, boundary_effect='shrink')
-
-        if cached:
-            self._double_tiled_structure = DoubleTiledStructure(list(self._cache_tiles_fps.flat), list(self._computation_tiles.flat), self._computation_method)
-            self._cache_tiles_met = set()
+        self._computation_tiles = self._full_fp.tile_count(*comp_tile_count, boundary_effect='shrink')            
 
 
     def _emptiest_query(self, query):
@@ -118,6 +112,14 @@ class AbstractRaster(object):
     @property
     def wkt_origin(self):
         return self._wkt_origin
+
+    @property
+    def dtype(self):
+        return self._dtype
+    
+
+    def __len__(self):
+        return self._num_bands
     
 
     def _produce_data(self, input_fp):
@@ -128,7 +130,13 @@ class AbstractRaster(object):
 
     def get_multi_data(self, fp_iterable, queue_size=5):
         query = FullQuery(queue_size)
-        query.produce.to_verb = list(fp_iterable.copy())
+        to_produce_unscaled = list(fp_iterable.copy())
+        to_produce = []
+
+        for fp in to_produce_unscaled:
+            to_produce.append(fp.intersection(self.fp, scale=self.fp.scale, alignment=(0, 0)))
+
+        query.produce.to_verb = to_produce
 
         self._prepare_query(query)
  
@@ -153,6 +161,13 @@ class AbstractCachedRaster(AbstractRaster):
         super().__init__(full_fp, True)
         self._io_pool = mp.pool.ThreadPool()
         self._rtype = rtype
+
+        tile_count = np.ceil(self._full_fp.rsize / 500) 
+        self._cache_tiles_fps = self._full_fp.tile_count(*tile_count, boundary_effect='shrink')
+
+        self._double_tiled_structure = DoubleTiledStructure(list(self._cache_tiles_fps.flat), list(self._computation_tiles.flat), self._computation_method)
+        self._cache_tiles_met = set()
+
         self._produce_cache_dict = defaultdict(set)
         self._produce_cache_data_dict = defaultdict(lambda: defaultdict(functools.partial(np.ndarray, 0)))
 
@@ -217,6 +232,7 @@ class AbstractCachedRaster(AbstractRaster):
             del self._produce_cache_data_dict[out_fp][cache_fp]
 
             self._produce_cache_dict[out_fp].discard(cache_fp)
+            assert out_fp.same_grid(cache_fp)
             out[cache_fp.slice_in(out_fp, clip=True)] = data[out_fp.slice_in(cache_fp, clip=True)]
 
         return out
@@ -282,7 +298,7 @@ class AbstractCachedRaster(AbstractRaster):
     def _compute_cache_data(self, cache_tile):
         data = self._double_tiled_structure.compute_cache_data(cache_tile)
         print(self.__class__.__name__, " writing data ", threading.currentThread().getName())
-        self._io_pool.apply(self._write_cache_data, (cache_tile, data))
+        self._io_pool.apply_async(self._write_cache_data, (cache_tile, data))
         return data
 
 
@@ -307,7 +323,7 @@ class AbstractNotCachedRaster(AbstractRaster):
         super().__init__(full_fp, False)
         self._produce_compute_dict = defaultdict(set)
         self._produce_compute_data_dict = defaultdict(lambda: defaultdict(functools.partial(np.ndarray, 0)))
-        self._consumed_fps= []
+        self._consumed_fps = []
 
 
     def _scheduler(self):
@@ -371,6 +387,7 @@ class AbstractNotCachedRaster(AbstractRaster):
             del self._produce_compute_data_dict[out_fp][computed_fp]
 
             self._produce_compute_dict[out_fp].discard(computed_fp)
+            assert out_fp.same_grid(cache_fp)
             out[computed_fp.slice_in(out_fp, clip=True)] = data[out_fp.slice_in(computed_fp, clip=True)]
 
         return out
@@ -439,8 +456,11 @@ class ResampledRaster(AbstractCachedRaster):
         else:
             ds = self._thread_storage.ds
 
-        with ds.open_araster(self._primitives[0].path).close as prim:
-            data = prim.get_data(input_fp, band=-1)
+        if isinstance(self._primitives[0], ResampledRaster):
+            data = self._primitives[0].get_data(input_fp)
+        else:
+            with ds.open_araster(self._primitives[0].path).close as prim:
+                data = prim.get_data(input_fp, band=-1)
 
         return data
 
@@ -451,16 +471,17 @@ class ResampledRaster(AbstractCachedRaster):
 
 class ResampledOrthoimage(ResampledRaster):
     
-    def __init__(self, path, scale):
-        super().__init__(path, scale, ("ortho",))
+    def __init__(self, raster, scale):
+        super().__init__(raster, scale, ("ortho",))
 
 
 
 
 class ResampledDSM(ResampledRaster):
     
-    def __init__(self, path, scale):
-        super().__init__(path, scale, ("dsm",))
+    def __init__(self, raster, scale):
+        super().__init__(raster, scale, ("dsm",))
+        self._dtype = "float32"
 
 
 
@@ -606,10 +627,10 @@ def main():
     initial_rgba = datasrc.open_araster(rgb_path)
     initial_dsm = datasrc.open_araster(dsm_path)
 
-    # resampled_rgba = ResampledOrthoimage(initial_rgba, 0.64)
-    resampled_dsm = ResampledDSM(initial_dsm, 1.28)
+    resampled_rgba = ResampledOrthoimage(initial_rgba, 0.64)
+    # resampled_dsm = ResampledDSM(initial_dsm, 1.28)
 
-    slopes = Slopes(resampled_dsm)
+    # slopes = Slopes(resampled_dsm)
 
     # hmr = HeatmapRaster(model, resampled_rgba, slopes)
 
@@ -621,14 +642,14 @@ def main():
 
 
     # hm_out = hmr.get_multi_data(display_tiles.flat, 5)
-    # rgba_out = resampled_rgba.get_multi_data(display_tiles.flat, 5)
+    rgba_out = resampled_rgba.get_multi_data(display_tiles.flat, 5)
     slopes_out = slopes.get_multi_data(dsm_display_tiles.flat, 5)
 
 
     for display_fp, dsm_disp_fp in zip(display_tiles.flat, dsm_display_tiles.flat):
         try:
-            # next(rgba_out)
-            next(slopes_out)
+            next(rgba_out)
+            # next(slopes_out)
             # show_many_images(
             #     [next(rgba_out), next(slopes_out)[...,0],np.argmax(next(hm_out), axis=-1)], 
             #     extents=[display_fp.extent, dsm_disp_fp.extent, display_fp.extent]
