@@ -323,9 +323,6 @@ class AbstractCachedRaster(AbstractRaster):
 class AbstractNotCachedRaster(AbstractRaster):
     def __init__(self, full_fp):
         super().__init__(full_fp, False)
-        self._produce_compute_dict = defaultdict(set)
-        self._produce_compute_data_dict = defaultdict(lambda: defaultdict(functools.partial(np.ndarray, 0)))
-        self._consumed_fps = []
 
 
     def _scheduler(self):
@@ -339,7 +336,12 @@ class AbstractNotCachedRaster(AbstractRaster):
                 # print("       cached:  ", query.uncache.verbed.qsize())
                 # print("       computed:  ", query.compute.verbed.qsize())
                 # print("       collected:  ", query.collect.verbed.qsize())
-                self._consume_compute_fp(query)
+
+                while query.compute.to_verb:
+                    to_compute_fp = query.compute.to_verb.pop(0)
+                    query.collect.to_verb.append()
+                    self._consumed_fps.append(to_compute_fp)
+                    query.compute.staging.append(self._computation_pool.apply_async(self._compute_data, (to_compute_fp,)))
 
                 # If all to_produce was consumed, the query has ended
                 if not query.produce.to_verb:
@@ -347,55 +349,11 @@ class AbstractNotCachedRaster(AbstractRaster):
                     del query
                     continue
 
-                if not query.produce.staging:
-                    query.produce.staging.append(self._computation_pool.apply_async(self._produce_data, (query.produce.to_verb[0],)))
-
-                elif query.produce.staging[0].ready():
-                    query.produce.verbed.put(query.produce.staging.pop(0).get())
+                if query.compute.staging and query.compute.staging[0].ready():
+                    query.produce.verbed.put(query.compute.staging.pop(0).get())
                     del query.produce.to_verb[0]
 
-                if query.compute.staging and query.compute.staging[0].ready():
-                    query.compute.verbed.put(query.compute.staging.pop(0).get())
-
-                if not query.compute.verbed.empty():
-                    self._computed_to_produce_staging(query)
-
             time.sleep(1e-2)
-
-
-
-    def _computed_to_produce_staging(self, query):
-        computed_data = query.compute.verbed.get()
-        computed_fp = self._consumed_fps.pop(0)
-
-        assert np.array_equal(computed_fp.shape, computed_data.shape[0:2])
-
-        for produce_fp in self._produce_compute_dict.keys():
-            if computed_fp in self._produce_compute_dict[produce_fp]:
-                self._produce_compute_data_dict[produce_fp][computed_fp] = computed_data
-
-
-
-    def _produce_data(self, out_fp):
-        if self._num_bands == 1:
-            out = np.empty(tuple(out_fp.shape), dtype=self._dtype)
-        else:
-            out = np.empty(tuple(out_fp.shape) + (self._num_bands,), dtype=self._dtype)
-
-
-        for computed_fp in  self._produce_compute_dict[out_fp].copy():
-            while self._produce_compute_data_dict[out_fp][computed_fp].size == 0:
-                time.sleep(1e-2)
-
-            data = self._produce_compute_data_dict[out_fp][computed_fp]
-            del self._produce_compute_data_dict[out_fp][computed_fp]
-
-            self._produce_compute_dict[out_fp].discard(computed_fp)
-            assert out_fp.same_grid(computed_fp)
-            out[computed_fp.slice_in(out_fp, clip=True)] = data[out_fp.slice_in(computed_fp, clip=True)]
-
-        assert np.array_equal(out_fp.shape, out.shape[0:2])
-        return out
 
 
 
@@ -409,15 +367,6 @@ class AbstractNotCachedRaster(AbstractRaster):
                 for computation_tile in self._computation_tiles.flat:
                     if computation_tile.share_area(to_produce):
                         query.compute.to_verb.append(computation_tile)
-                        self._produce_compute_dict[to_produce].add(computation_tile)
-
-
-    def _consume_compute_fp(self, query):
-        if not query.compute.to_verb:
-            return
-        to_compute_fp = query.compute.to_verb.pop(0)
-        self._consumed_fps.append(to_compute_fp)
-        query.compute.staging.append(self._computation_pool.apply_async(self._compute_data, (to_compute_fp,)))
 
 
     def _prepare_query(self, query):
