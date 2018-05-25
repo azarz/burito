@@ -77,6 +77,9 @@ class AbstractRaster(object):
         self._cv = threading.Condition()
 
         self._computation_pool = mp.pool.ThreadPool()
+        self._io_pool = mp.pool.ThreadPool()
+
+        self._thread_storage = threading.local()
     
         ds = buzz.DataSource(allow_interpolation=True)
 
@@ -157,7 +160,6 @@ class AbstractRaster(object):
 class AbstractCachedRaster(AbstractRaster):
     def __init__(self, full_fp, rtype):
         super().__init__(full_fp, True)
-        self._io_pool = mp.pool.ThreadPool()
         self._rtype = rtype
 
         tile_count = np.ceil(self._full_fp.rsize / 500) 
@@ -339,9 +341,8 @@ class AbstractNotCachedRaster(AbstractRaster):
 
                 while query.compute.to_verb:
                     to_compute_fp = query.compute.to_verb.pop(0)
-                    query.collect.to_verb.append()
-                    self._consumed_fps.append(to_compute_fp)
-                    query.compute.staging.append(self._computation_pool.apply_async(self._compute_data, (to_compute_fp,)))
+                    query.collect.to_verb.append(to_compute_fp)
+                    query.collect.staging.append(self._io_pool.apply_async(self._collect_data, (to_compute_fp,)))
 
                 # If all to_produce was consumed, the query has ended
                 if not query.produce.to_verb:
@@ -349,9 +350,16 @@ class AbstractNotCachedRaster(AbstractRaster):
                     del query
                     continue
 
+                if query.collect.staging and query.collect.staging[0].ready():
+                    collected_data = query.collect.staging.pop(0).get()
+                    query.compute.staging.append(self._computation_pool.apply_async(self._compute_data, (collected_data,)))
+
                 if query.compute.staging and query.compute.staging[0].ready():
                     query.produce.verbed.put(query.compute.staging.pop(0).get())
                     del query.produce.to_verb[0]
+
+
+
 
             time.sleep(1e-2)
 
@@ -364,9 +372,7 @@ class AbstractNotCachedRaster(AbstractRaster):
             raise RuntimeError()
         else:
             for to_produce in query.produce.to_verb:
-                for computation_tile in self._computation_tiles.flat:
-                    if computation_tile.share_area(to_produce):
-                        query.compute.to_verb.append(computation_tile)
+                query.compute.to_verb.append(to_produce)
 
 
     def _prepare_query(self, query):
@@ -382,7 +388,6 @@ class ResampledRaster(AbstractCachedRaster):
     def __init__(self, raster, scale, rtype):
 
         full_fp = raster.fp.intersection(raster.fp, scale=scale, alignment=(0, 0))
-        self._thread_storage = threading.local()
     
         super().__init__(full_fp, rtype)
 
@@ -406,15 +411,11 @@ class ResampledRaster(AbstractCachedRaster):
         if not hasattr(self._thread_storage, "ds"):
             ds = buzz.DataSource(allow_interpolation=True)
             self._thread_storage.ds = ds
-
         else:
             ds = self._thread_storage.ds
 
-        if isinstance(self._primitives[0], ResampledRaster):
-            data = self._primitives[0].get_data(input_fp)
-        else:
-            with ds.open_araster(self._primitives[0].path).close as prim:
-                data = prim.get_data(input_fp, band=-1)
+        with ds.open_araster(self._primitives[0].path).close as prim:
+            data = prim.get_data(input_fp)
 
         assert np.array_equal(input_fp.shape, data.shape[0:2])
         return data
@@ -453,20 +454,9 @@ class Slopes(AbstractNotCachedRaster):
         self._dtype = "float32"    
 
 
-    def _to_produce_to_to_compute(self, query):
-        if not query.produce.to_verb:
-            return
-        elif self._cached:
-            raise RuntimeError()
-        else:
-            for to_produce in query.produce.to_verb:
-                query.compute.to_verb.append(to_produce)
-                self._produce_compute_dict[to_produce].add(to_produce)
-
-
-    def _compute_data(self, input_fp):
+    def _compute_data(self, data):
         print(self.__class__.__name__, " computing data ", threading.currentThread().getName())
-        arr = self._collect_data(input_fp.dilate(1))
+        arr = data
         nodata_mask = arr == self._nodata
         nodata_mask = ndi.binary_dilation(nodata_mask)
         kernel = [
@@ -491,7 +481,16 @@ class Slopes(AbstractNotCachedRaster):
 
 
     def _collect_data(self, input_fp):
-        return self._primitives[0].get_data(input_fp)
+        if not hasattr(self._thread_storage, "ds"):
+            ds = buzz.DataSource(allow_interpolation=True)
+            self._thread_storage.ds = ds
+        else:
+            ds = self._thread_storage.ds
+
+        with ds.open_araster(self._primitives[0].path).close as prim:
+            data = prim.get_data(input_fp.dilate(1))
+
+        return data
 
 
 
@@ -585,7 +584,7 @@ def main():
     resampled_rgba = ResampledOrthoimage(initial_rgba, 0.64)
     resampled_dsm = ResampledDSM(initial_dsm, 1.28)
 
-    slopes = Slopes(resampled_dsm)
+    slopes = Slopes(initial_dsm)
 
     # hmr = HeatmapRaster(model, resampled_rgba, slopes)
 
