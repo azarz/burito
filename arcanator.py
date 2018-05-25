@@ -84,7 +84,7 @@ class AbstractRaster(object):
         ds = buzz.DataSource(allow_interpolation=True)
 
         self._full_fp = full_fp
-
+    
         self._num_bands = None # to implement in subclasses
         self._nodata = None # to implement in subclasses
         self._wkt_origin = None # to implement in subclasses
@@ -119,6 +119,11 @@ class AbstractRaster(object):
     @property
     def dtype(self):
         return self._dtype
+
+    @property
+    def pxsizex(self):
+        return self._full_fp.pxsizex
+    
     
 
     def __len__(self):
@@ -143,6 +148,7 @@ class AbstractRaster(object):
 
         def out_generator():
             for fp in fp_iterable:
+                assert fp.same_grid(self.fp)
                 result = query.produce.verbed.get()
                 assert np.array_equal(fp.shape, result.shape[0:2])
                 yield result
@@ -359,8 +365,6 @@ class AbstractNotCachedRaster(AbstractRaster):
                     del query.produce.to_verb[0]
 
 
-
-
             time.sleep(1e-2)
 
 
@@ -465,13 +469,13 @@ class Slopes(AbstractNotCachedRaster):
             [0, 1, 0],
         ]
         arru = ndi.maximum_filter(arr, None, kernel) - arr
-        arru = np.arctan(arru / input_fp.pxsizex)
+        arru = np.arctan(arru / self.pxsizex)
         arru = arru / np.pi * 180.
         arru[nodata_mask] = 0
         arru = arru[1:-1, 1:-1]
 
         arrd = arr - ndi.minimum_filter(arr, None, kernel)
-        arrd = np.arctan(arrd / input_fp.pxsizex)
+        arrd = np.arctan(arrd / self.pxsizex)
         arrd = arrd / np.pi * 180.
         arrd[nodata_mask] = 0
         arrd = arrd[1:-1, 1:-1]
@@ -584,7 +588,7 @@ def main():
     resampled_rgba = ResampledOrthoimage(initial_rgba, 0.64)
     resampled_dsm = ResampledDSM(initial_dsm, 1.28)
 
-    slopes = Slopes(initial_dsm)
+    slopes = Slopes(resampled_dsm)
 
     # hmr = HeatmapRaster(model, resampled_rgba, slopes)
 
