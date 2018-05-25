@@ -77,8 +77,7 @@ class AbstractRaster(object):
         self._cv = threading.Condition()
 
         self._computation_pool = mp.pool.ThreadPool()
-        self._io_pool = mp.pool.ThreadPool()
-
+    
         ds = buzz.DataSource(allow_interpolation=True)
 
         self._full_fp = full_fp
@@ -152,17 +151,25 @@ class AbstractRaster(object):
 class AbstractCachedRaster(AbstractRaster):
     def __init__(self, full_fp, rtype):
         super().__init__(full_fp, True)
+        self._io_pool = mp.pool.ThreadPool()
         self._rtype = rtype
         self._produce_cache_dict = defaultdict(set)
         self._produce_cache_data_dict = defaultdict(lambda: defaultdict(functools.partial(np.ndarray, 0)))
 
 
     def _scheduler(self):
-        print("hello")
+        print(self.__class__.__name__, " scheduler in ", threading.currentThread().getName())
         while True:                
             ordered_queries = sorted(self._queries, key=self._emptiest_query)
 
             for query in ordered_queries:
+                # print(self.__class__.__name__, "  ", query,  " queues:   ", threading.currentThread().getName())
+                # print("       produced:  ", query.produce.verbed.qsize())
+                # print("       cached:  ", query.cache_out.verbed.qsize())
+                # print("       computed:  ", query.compute.verbed.qsize())
+                # print("       collected:  ", query.collect.verbed.qsize())
+
+
                 # If all to_produce was consumed, the query has ended
                 if not query.produce.to_verb:
                     self._queries.remove(query)
@@ -260,9 +267,10 @@ class AbstractCachedRaster(AbstractRaster):
 
 
     def _write_cache_data(self, cache_tile, data):
+        print(self.__class__.__name__, " writing in ", threading.currentThread().getName())
         filepath = self._get_cache_tile_path(cache_tile)
         ds = buzz.DataSource(allow_interpolation=True)
-
+        print(self.__class__.__name__, " filepath ", filepath, threading.currentThread().getName())
         out_proxy = ds.create_araster(filepath, cache_tile, data.dtype, self._num_bands, driver="GTiff", sr=self._primitives[0].wkt_origin)
         out_proxy.set_data(data, band=-1)
         out_proxy.close()
@@ -273,7 +281,8 @@ class AbstractCachedRaster(AbstractRaster):
 
     def _compute_cache_data(self, cache_tile):
         data = self._double_tiled_structure.compute_cache_data(cache_tile)
-        self._io_pool.apply_async(self._write_cache_data, (cache_tile, data))
+        print(self.__class__.__name__, " writing data ", threading.currentThread().getName())
+        self._io_pool.apply(self._write_cache_data, (cache_tile, data))
         return data
 
 
@@ -302,10 +311,16 @@ class AbstractNotCachedRaster(AbstractRaster):
 
 
     def _scheduler(self):
+        print(self.__class__.__name__, " scheduler in ", threading.currentThread().getName())
         while True:
             ordered_queries = sorted(self._queries, key=self._emptiest_query)
 
             for query in ordered_queries:
+                # print(self.__class__.__name__, "  ", query,  " queues:   ", threading.currentThread().getName())
+                # print("       produced:  ", query.produce.verbed.qsize())
+                # print("       cached:  ", query.cache_out.verbed.qsize())
+                # print("       computed:  ", query.compute.verbed.qsize())
+                # print("       collected:  ", query.collect.verbed.qsize())
                 self._consume_compute_fp(query)
 
                 # If all to_produce was consumed, the query has ended
@@ -413,6 +428,7 @@ class ResampledRaster(AbstractCachedRaster):
     
     
     def _computation_method(self, input_fp):
+        print(self.__class__.__name__, " computing data ", threading.currentThread().getName())
         return self._collect_data(input_fp)
 
     def _collect_data(self, input_fp):
@@ -473,6 +489,7 @@ class Slopes(AbstractNotCachedRaster):
 
 
     def _compute_data(self, input_fp):
+        print(self.__class__.__name__, " computing data ", threading.currentThread().getName())
         arr = self._collect_data(input_fp.dilate(1))
         nodata_mask = arr == self._nodata
         nodata_mask = ndi.binary_dilation(nodata_mask)
@@ -538,8 +555,8 @@ class HeatmapRaster(AbstractCachedRaster):
         rgba_tile = output_fp_to_input_fp(computation_tile, 0.64, self._model.get_layer("rgb").input_shape[1])
         dsm_tile = output_fp_to_input_fp(computation_tile, 1.28, self._model.get_layer("slopes").input_shape[1])
 
-        rgba_data = self._primitives[0].get_data(rgba_tile)
-        slope_data = self._primitives[1].get_data(dsm_tile)
+        rgba_data = self._collect_rgba_data(rgba_tile)
+        slope_data = self._collect_slope_data(dsm_tile)
 
         rgb_data = np.where((rgba_data[...,3] == 255)[...,np.newaxis], rgba_data, 0)[...,0:3]
         rgb = (rgb_data.astype('float32') - 127.5) / 127.5
@@ -548,7 +565,6 @@ class HeatmapRaster(AbstractCachedRaster):
 
         with self._lock:
             prediction = self._model.predict([rgb[np.newaxis], slopes[np.newaxis]])[0]
-        print("I LIKE TRAINS!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!")
 
         return prediction
 
@@ -564,8 +580,6 @@ class HeatmapRaster(AbstractCachedRaster):
 
 
 def main():
-    print("hello")
-
     rgb_path = "./ortho_8.00cm.tif"
     dsm_path = "./dsm_8.00cm.tif"
     model_path = "./18-01-25-15-38-19_1078_1.00000000_0.07799472_aracena.hdf5"
@@ -581,7 +595,7 @@ def main():
 
     model = load_model(model_path)
     model._make_predict_function()
-
+    print("")
 
     with datasrc.open_araster(rgb_path).close as raster:
         out_fp = raster.fp.intersection(raster.fp, scale=1.28, alignment=(0, 0))
@@ -592,12 +606,12 @@ def main():
     initial_rgba = datasrc.open_araster(rgb_path)
     initial_dsm = datasrc.open_araster(dsm_path)
 
-    resampled_rgba = ResampledOrthoimage(initial_rgba, 0.64)
+    # resampled_rgba = ResampledOrthoimage(initial_rgba, 0.64)
     resampled_dsm = ResampledDSM(initial_dsm, 1.28)
 
     slopes = Slopes(resampled_dsm)
 
-    hmr = HeatmapRaster(model, resampled_rgba, slopes)
+    # hmr = HeatmapRaster(model, resampled_rgba, slopes)
 
     big_display_fp = out_fp
     big_dsm_disp_fp = big_display_fp.intersection(big_display_fp, scale=1.28, alignment=(0, 0))
@@ -606,14 +620,15 @@ def main():
     dsm_display_tiles = big_dsm_disp_fp.tile_count(5, 5, boundary_effect='shrink')
 
 
-    hm_out = hmr.get_multi_data(display_tiles.flat, 5)
-    rgba_out = resampled_rgba.get_multi_data(display_tiles.flat, 5)
+    # hm_out = hmr.get_multi_data(display_tiles.flat, 5)
+    # rgba_out = resampled_rgba.get_multi_data(display_tiles.flat, 5)
     slopes_out = slopes.get_multi_data(dsm_display_tiles.flat, 5)
 
 
     for display_fp, dsm_disp_fp in zip(display_tiles.flat, dsm_display_tiles.flat):
         try:
-            next(hm_out)
+            # next(rgba_out)
+            next(slopes_out)
             # show_many_images(
             #     [next(rgba_out), next(slopes_out)[...,0],np.argmax(next(hm_out), axis=-1)], 
             #     extents=[display_fp.extent, dsm_disp_fp.extent, display_fp.extent]
