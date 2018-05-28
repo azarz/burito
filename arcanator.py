@@ -205,19 +205,13 @@ class AbstractCachedRaster(AbstractRaster):
                     query.uncache.verbed.put(query.uncache.staging.pop(0).get())
 
                 if not query.uncache.verbed.empty():
-                    self._uncache_to_produce_staging(query)
+                    do_sth()
 
             time.sleep(1e-2)
 
 
-    def _get_cache_tile_path(self, cache_tile):
-        path = str(
-            Path(CACHE_DIR) / 
-            DIR_NAMES[frozenset({*self._rtype})] / 
-            "{:.2f}_{:.2f}_{:.2f}_{}".format(*cache_tile.tl, cache_tile.pxsizex, cache_tile.rsizex)
-        )
 
-        return path
+
 
 
     def _build_cache_staging(self, query):
@@ -259,6 +253,15 @@ class AbstractCachedRaster(AbstractRaster):
         print(self.__class__.__name__, " writing data ", threading.currentThread().getName())
         self._io_pool.apply_async(self._write_cache_data, (cache_tile, data))
         return data
+
+    def _get_cache_tile_path(self, cache_tile):
+        path = str(
+            Path(CACHE_DIR) / 
+            DIR_NAMES[frozenset({*self._rtype})] / 
+            "{:.2f}_{:.2f}_{:.2f}_{}".format(*cache_tile.tl, cache_tile.pxsizex, cache_tile.rsizex)
+        )
+
+        return path
 
 
     def _prepare_query(self, query):
