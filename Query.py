@@ -10,7 +10,7 @@ class QueryPart(object):
 
 class FullQuery(object):
 
-	def __init__(self, queue_size):
+	def __init__(self, queue_size=5):
 		self.produce = QueryPart(qsize=queue_size)
 		self.uncache = QueryPart(qsize=queue_size)
 		self.compute = QueryPart(qsize=queue_size)

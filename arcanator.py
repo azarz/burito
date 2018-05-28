@@ -174,9 +174,6 @@ class AbstractCachedRaster(AbstractRaster):
         self._double_tiled_structure = DoubleTiledStructure(list(self._cache_tiles_fps.flat), list(self._computation_tiles.flat), self._computation_method)
         self._cache_tiles_met = set()
 
-        self._produce_cache_dict = defaultdict(set)
-        self._produce_cache_data_dict = defaultdict(lambda: defaultdict(functools.partial(np.ndarray, 0)))
-
 
     def _scheduler(self):
         print(self.__class__.__name__, " scheduler in ", threading.currentThread().getName())
@@ -198,7 +195,7 @@ class AbstractCachedRaster(AbstractRaster):
                     continue
 
                 if not query.produce.staging:
-                    query.produce.staging.append(self._computation_pool.apply_async(self._produce_data, (query.produce.to_verb[0],)))
+                    query.produce.staging.append(self._computation_pool.apply_async(query.produce_to_cache_dts.compute_out_data, (query.produce.to_verb[0],)))
 
                 elif query.produce.staging[0].ready():
                     query.produce.verbed.put(query.produce.staging.pop(0).get())
@@ -213,38 +210,6 @@ class AbstractCachedRaster(AbstractRaster):
             time.sleep(1e-2)
 
 
-    def _uncache_to_produce_staging(self, query):
-        cache_data = query.uncache.verbed.get()
-        cache_fp = query.uncache.to_verb.pop(0)
-
-        for produce_fp in self._produce_cache_dict.keys():
-            if cache_fp in self._produce_cache_dict[produce_fp]:
-                self._produce_cache_data_dict[produce_fp][cache_fp] = cache_data
-
-
-
-
-    def _produce_data(self, out_fp):
-        if self._num_bands == 1:
-            out = np.empty(tuple(out_fp.shape), dtype=self._dtype)
-        else:
-            out = np.empty(tuple(out_fp.shape) + (self._num_bands,), dtype=self._dtype)
-
-        for cache_fp in  self._produce_cache_dict[out_fp].copy():
-            while self._produce_cache_data_dict[out_fp][cache_fp].size == 0:
-                pass
-
-            data = self._produce_cache_data_dict[out_fp][cache_fp]
-            del self._produce_cache_data_dict[out_fp][cache_fp]
-
-            self._produce_cache_dict[out_fp].discard(cache_fp)
-            assert out_fp.same_grid(cache_fp)
-            out[cache_fp.slice_in(out_fp, clip=True)] = data[out_fp.slice_in(cache_fp, clip=True)]
-
-        return out
-
-
-
     def _get_cache_tile_path(self, cache_tile):
         path = str(
             Path(CACHE_DIR) / 
@@ -255,19 +220,10 @@ class AbstractCachedRaster(AbstractRaster):
         return path
 
 
-    def _to_produce_to_to_cache(self, query):
-        for to_produce in query.produce.to_verb:
-            for cache_tile in self._cache_tiles_fps.flat:
-                if cache_tile.share_area(to_produce):
-                    if not cache_tile in query.uncache.to_verb:
-                        query.uncache.to_verb.append(cache_tile)
-                    self._produce_cache_dict[to_produce].add(cache_tile)
-
-
     def _build_cache_staging(self, query):
         for to_uncache in query.uncache.to_verb:
             if to_uncache in self._cache_tiles_met:
-                query.uncache.staging.append(self._io_pool.apply_async(self._wait_for_computing, (to_uncache,)))
+                do_sth()
 
             else:
                 self._cache_tiles_met.add(to_uncache)
@@ -288,7 +244,7 @@ class AbstractCachedRaster(AbstractRaster):
         return data
 
 
-    def _write_cache_data(self):
+    def _write_cache_data(self, cache_tile, data):
         print(self.__class__.__name__, " writing in ", threading.currentThread().getName())
         filepath = self._get_cache_tile_path(cache_tile)
         ds = buzz.DataSource(allow_interpolation=True)
@@ -297,30 +253,16 @@ class AbstractCachedRaster(AbstractRaster):
         out_proxy.set_data(data, band=-1)
         out_proxy.close()
 
-        with self._cv:
-            self._cv.notify_all()
-
 
     def _compute_cache_data(self, cache_tile):
-        data = self._double_tiled_structure.compute_cache_data(cache_tile)
+        data = self._double_tiled_structure.compute_out_data(cache_tile)
         print(self.__class__.__name__, " writing data ", threading.currentThread().getName())
-        # self._write_cache_data(cache_tile, data)
-        self._io_pool.apply_async(self._write_cache_data).get()
-        print("7878787878787878787")
+        self._io_pool.apply_async(self._write_cache_data, (cache_tile, data))
         return data
 
 
-    def _wait_for_computing(self, cache_tile):
-        with self._cv:
-            print("already met")
-            while not os.path.isfile(self._get_cache_tile_path(cache_tile)):
-                self._cv.wait()
-        print("while out")
-        return self._read_cache_data(cache_tile)
-
-
     def _prepare_query(self, query):
-        self._to_produce_to_to_cache(query)
+        query.produce_to_cache_dts = DoubleTiledStructure(list(query.produce.to_verb.copy()), list(self._cache_tiles_fps.flat), self._read_cache_data)
         self._build_cache_staging(query)
 
 
