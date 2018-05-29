@@ -16,6 +16,7 @@ import buzzard as buzz
 import scipy.ndimage as ndi
 import numpy as np
 import shapely.geometry as sg
+import networkx as nx
 
 from show_many_images import show_many_images
 from uids_of_paths import uids_of_paths
@@ -67,6 +68,7 @@ class AbstractRaster(object):
 
     def __init__(self, full_fp, cached):
         self._queries = []
+        self._new_queries = []
         self._primitives = []
 
         self._cached = cached
@@ -148,6 +150,7 @@ class AbstractRaster(object):
         self._prepare_query(query)
  
         self._queries.append(query)
+        self._new_queries.append(query)
 
         # def out_generator():
         #     for fp in fp_iterable:
@@ -174,6 +177,8 @@ class AbstractCachedRaster(AbstractRaster):
 
         tile_count = np.ceil(self._full_fp.rsize / 500) 
         self._cache_tiles_fps = self._full_fp.tile_count(*tile_count, boundary_effect='shrink')
+
+        self._graph = nx.DiGraph()
 
 
     def _get_cache_tile_path(self, cache_tile):
@@ -203,18 +208,14 @@ class AbstractCachedRaster(AbstractRaster):
         out_proxy.close()
 
 
-    def _compute_cache_data(self, cache_tile):
-        data = self._double_tiled_structure.compute_out_data(cache_tile)
-        return data
-
-
     def _scheduler(self):
         print(self.__class__.__name__, " scheduler in ", threading.currentThread().getName())
+
         while True:      
-            update_graph_from_query()
-            send_collect_to_primitives()       
+            self._update_graph_from_queries()
+            self._send_collect_to_primitives()
+
             ordered_queries = sorted(self._queries, key=self._pressure_ratio)
-    
             query = ordered_queries[0]
 
             if not query.collect.verbed.empty():
@@ -226,10 +227,13 @@ class AbstractCachedRaster(AbstractRaster):
 
                 continue
 
-            for to_produce in query.produce.to_verb:
+            for index, to_produce in enumerate(query.produce.to_verb):
                 node = to_produce
                 while len(self._graph.in_edges(node)) > 0
                     node = list(self._graph.in_edges(node))[0][0]
+
+                if index == 0 and node == to_produce:
+                    query.produce.verbed.put(node.future.get())
 
                 if not node.future.ready():
                     continue
@@ -241,12 +245,38 @@ class AbstractCachedRaster(AbstractRaster):
 
                 break
 
+            self._clean_graph()
+
+
+    def _update_graph_from_queries(self):
+        while self._new_queries:
+            new_query = self.new_queries.pop(0)
+
+            for to_produce in new_quert.produce.to_verb:
+                self._graph.add_node(to_produce)
+                new_query.read.to_verb.append(self._to_read_of_to_produce(to_produce))
+                for to_read in new_query.read.to_verb:
+                    self._graph.add_node(to_read)
+                    self._graph.add_edge(to_read, to_produce)
+                    new_query.write.to_verb.append(self._to_write_of_to_read(to_read))
+                    for to_write in new_query.write.to_verb:
+                        self._graph.add_node(to_write)
+                        self._graph.add_edge(to_write, to_read)
+                        new_query.compute.to_verb.append(self._to_compute_of_to_write(to_write))
+                        for to_compute in new_query.compute.to_verb:
+                            self._graph.add_node(to_compute)
+                            self._graph.add_edge(to_compute, to_write)
+                            new_query.collect.to_verb.append(self._to_collect_of_to_compute(to_compute))
+                            for to_collect in new_query.collect.to_verb:
+                                self._graph.add_node(to_collect)
+                                self._graph.add_edge(to_collect, to_compute)
 
 
 
 
 
-
+    def _clean_graph(self):
+        self._graph.remove_nodes_from(nx.isolates(self._graph))
 
 
 
@@ -268,7 +298,6 @@ class AbstractNotCachedRaster(AbstractRaster):
             for query in ordered_queries:
                 # print(self.__class__.__name__, "  ", query,  " queues:   ", threading.currentThread().getName())
                 # print("       produced:  ", query.produce.verbed.qsize())
-                # print("       cached:  ", query.uncache.verbed.qsize())
                 # print("       computed:  ", query.compute.verbed.qsize())
                 # print("       collected:  ", query.collect.verbed.qsize())
 
