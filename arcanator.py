@@ -24,7 +24,7 @@ from watcher import Watcher
 from Query import FullQuery
 from DoubleTiledStructure import DoubleTiledStructure
 
-CATEGORIES= (
+CATEGORIES = (
    #0        1       2        3        4
    'nolab', 'vege', 'water', 'tapis', 'building',
    #5         6        7           8         9
@@ -41,14 +41,14 @@ for i, cat in enumerate(CATEGORIES):
 
 
 # DIR_NAMES = uids_of_paths({
-#         "ortho": rgb_path,
-#         "dsm": dsm_path
-#     })
+#     "ortho": rgb_path,
+#     "dsm": dsm_path
+# })  
 DIR_NAMES = {
-        frozenset(["ortho"]): "rgb",
-        frozenset(["dsm"]): "dsm",
-        frozenset(["ortho","dsm"]): "both"
-    }
+    frozenset(["ortho"]): "rgb",
+    frozenset(["dsm"]): "dsm",
+    frozenset(["ortho","dsm"]): "both"
+}
 
 CACHE_DIR = "./.cache"
 
@@ -104,6 +104,9 @@ class AbstractRaster(object):
     def _merge_out_tiles(self, tiles, data, out_fp):
         raise NotImplementedError('Should be implemented by all subclasses')
 
+    def _prepare_query(self, query):
+        return
+
     @property
     def fp(self):
         return self._full_fp
@@ -146,14 +149,15 @@ class AbstractRaster(object):
  
         self._queries.append(query)
 
-        def out_generator():
-            for fp in fp_iterable:
-                assert fp.same_grid(self.fp)
-                result = query.produce.verbed.get()
-                assert np.array_equal(fp.shape, result.shape[0:2])
-                yield result
+        # def out_generator():
+        #     for fp in fp_iterable:
+        #         assert fp.same_grid(self.fp)
+        #         result = query.produce.verbed.get()
+        #         assert np.array_equal(fp.shape, result.shape[0:2])
+        #         yield result
 
-        return out_generator()
+        # return out_generator()
+        return query.produce.verbed
 
 
     def get_data(self, fp):
@@ -171,62 +175,14 @@ class AbstractCachedRaster(AbstractRaster):
         tile_count = np.ceil(self._full_fp.rsize / 500) 
         self._cache_tiles_fps = self._full_fp.tile_count(*tile_count, boundary_effect='shrink')
 
-        self._double_tiled_structure = DoubleTiledStructure(list(self._cache_tiles_fps.flat), list(self._computation_tiles.flat), self._computation_method)
-        self._cache_tiles_met = set()
 
-
-    def _scheduler(self):
-        print(self.__class__.__name__, " scheduler in ", threading.currentThread().getName())
-        while True:                
-            ordered_queries = sorted(self._queries, key=self._pressure_ratio)
-
-            for query in ordered_queries:
-                # print(self.__class__.__name__, "  ", query,  " queues:   ", threading.currentThread().getName())
-                # print("       produced:  ", query.produce.verbed.qsize())
-                # print("       cached:  ", query.uncache.verbed.qsize())
-                # print("       computed:  ", query.compute.verbed.qsize())
-                # print("       collected:  ", query.collect.verbed.qsize())
-
-
-                # If all to_produce was consumed, the query has ended
-                if not query.produce.to_verb:
-                    self._queries.remove(query)
-                    del query
-                    continue
-
-                if not query.produce.staging:
-                    query.produce.staging.append(self._computation_pool.apply_async(query.produce_to_cache_dts.compute_out_data, (query.produce.to_verb[0],)))
-
-                elif query.produce.staging[0].ready():
-                    query.produce.verbed.put(query.produce.staging.pop(0).get())
-                    del query.produce.to_verb[0]
-
-                if query.uncache.staging and query.uncache.staging[0].ready():
-                    query.uncache.verbed.put(query.uncache.staging.pop(0).get())
-
-                if not query.uncache.verbed.empty():
-                    do_sth()
-
-            time.sleep(1e-2)
-
-
-
-
-
-
-    def _build_cache_staging(self, query):
-        for to_uncache in query.uncache.to_verb:
-            if to_uncache in self._cache_tiles_met:
-                do_sth()
-
-            else:
-                self._cache_tiles_met.add(to_uncache)
-
-                if os.path.isfile(self._get_cache_tile_path(to_uncache)):
-                    query.uncache.staging.append(self._io_pool.apply_async(self._read_cache_data, (to_uncache,)))
-                else:
-                    query.uncache.staging.append(self._computation_pool.apply_async(self._compute_cache_data, (to_uncache,)))
-
+    def _get_cache_tile_path(self, cache_tile):
+        path = str(
+            Path(CACHE_DIR) / 
+            DIR_NAMES[frozenset({*self._rtype})] / 
+            "{:.2f}_{:.2f}_{:.2f}_{}".format(*cache_tile.tl, cache_tile.pxsizex, cache_tile.rsizex)
+        )
+        return path
 
 
     def _read_cache_data(self, cache_tile):
@@ -239,10 +195,9 @@ class AbstractCachedRaster(AbstractRaster):
 
 
     def _write_cache_data(self, cache_tile, data):
-        print(self.__class__.__name__, " writing in ", threading.currentThread().getName())
         filepath = self._get_cache_tile_path(cache_tile)
         ds = buzz.DataSource(allow_interpolation=True)
-        print(self.__class__.__name__, " filepath ", filepath, threading.currentThread().getName())
+
         out_proxy = ds.create_araster(filepath, cache_tile, data.dtype, self._num_bands, driver="GTiff", sr=self._primitives[0].wkt_origin)
         out_proxy.set_data(data, band=-1)
         out_proxy.close()
@@ -250,23 +205,50 @@ class AbstractCachedRaster(AbstractRaster):
 
     def _compute_cache_data(self, cache_tile):
         data = self._double_tiled_structure.compute_out_data(cache_tile)
-        print(self.__class__.__name__, " writing data ", threading.currentThread().getName())
-        self._io_pool.apply_async(self._write_cache_data, (cache_tile, data))
         return data
 
-    def _get_cache_tile_path(self, cache_tile):
-        path = str(
-            Path(CACHE_DIR) / 
-            DIR_NAMES[frozenset({*self._rtype})] / 
-            "{:.2f}_{:.2f}_{:.2f}_{}".format(*cache_tile.tl, cache_tile.pxsizex, cache_tile.rsizex)
-        )
 
-        return path
+    def _scheduler(self):
+        print(self.__class__.__name__, " scheduler in ", threading.currentThread().getName())
+        while True:      
+            update_graph_from_query()
+            send_collect_to_primitives()       
+            ordered_queries = sorted(self._queries, key=self._pressure_ratio)
+    
+            query = ordered_queries[0]
+
+            if not query.collect.verbed.empty():
+                out_data = query.collect.verbed.get()
+                collect_out_edges = self._graph.out_edges(query.collect.to_verb[0])
+                for edge in collect_out_edges:
+                    edge[1].future = self._computation_pool.apply_async(self._compute_data, (edge.footprint, *out_data))
+                    self._graph.remove_edge(edge)
+
+                continue
+
+            for to_produce in query.produce.to_verb:
+                node = to_produce
+                while len(self._graph.in_edges(node)) > 0
+                    node = list(self._graph.in_edges(node))[0][0]
+
+                if not node.future.ready():
+                    continue
+
+                out_edges = self._graph.out_edges(node)
+                for out_edge in out_edges:
+                    out_edge[1].future = out_edge.pool.apply_async(out_edge.function, (out_edge.footprint, node.future.get()))
+                    self._graph.remove_edge(out_edge)
+
+                break
 
 
-    def _prepare_query(self, query):
-        query.produce_to_cache_dts = DoubleTiledStructure(list(query.produce.to_verb.copy()), list(self._cache_tiles_fps.flat), self._read_cache_data)
-        self._build_cache_staging(query)
+
+
+
+
+
+
+
 
 
 
@@ -305,7 +287,7 @@ class AbstractNotCachedRaster(AbstractRaster):
                     collected_data = query.collect.staging.pop(0).get()
                     query.compute.staging.append(self._computation_pool.apply_async(self._compute_data, (collected_data,)))
 
-                if query.compute.staging and query.compute.staging[0].ready():
+                if query.compute.staging and query.compute.staging[0].ready() and not query.produce.verbed.full():
                     query.produce.verbed.put(query.compute.staging.pop(0).get())
                     del query.produce.to_verb[0]
 
@@ -475,12 +457,12 @@ class HeatmapRaster(AbstractCachedRaster):
         self._lock = threading.Lock()
 
 
-    def _computation_method(self, computation_tile):
-        rgba_tile = output_fp_to_input_fp(computation_tile, 0.64, self._model.get_layer("rgb").input_shape[1])
-        dsm_tile = output_fp_to_input_fp(computation_tile, 1.28, self._model.get_layer("slopes").input_shape[1])
+    def _computation_method(self, computation_tile, rgba_data, slope_ data):
+        # rgba_tile = output_fp_to_input_fp(computation_tile, 0.64, self._model.get_layer("rgb").input_shape[1])
+        # dsm_tile = output_fp_to_input_fp(computation_tile, 1.28, self._model.get_layer("slopes").input_shape[1])
 
-        rgba_data = self._collect_rgba_data(rgba_tile)
-        slope_data = self._collect_slope_data(dsm_tile)
+        # rgba_data = self._collect_rgba_data(rgba_tile)
+        # slope_data = self._collect_slope_data(dsm_tile)
 
         rgb_data = np.where((rgba_data[...,3] == 255)[...,np.newaxis], rgba_data, 0)[...,0:3]
         rgb = (rgb_data.astype('float32') - 127.5) / 127.5
