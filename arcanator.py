@@ -250,7 +250,7 @@ class AbstractCachedRaster(AbstractRaster):
 
     def _update_graph_from_queries(self):
         while self._new_queries:
-            new_query = self.new_queries.pop(0)
+            new_query = self._new_queries.pop(0)
 
             for to_produce in new_quert.produce.to_verb:
                 self._graph.add_node(to_produce)
