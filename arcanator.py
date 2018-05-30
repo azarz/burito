@@ -213,12 +213,17 @@ class AbstractCachedRaster(AbstractRaster):
 
         while True:      
             self._update_graph_from_queries()
-            self._send_collect_to_primitives()
 
             ordered_queries = sorted(self._queries, key=self._pressure_ratio)
             query = ordered_queries[0]
 
-            if not query.collect.verbed.empty():
+            one_is_empty = False
+            for collected_primitive in query.collect.verbed:
+                if collected_primitive.empty():
+                    one_is_empty = True
+
+
+            if not one_is_empty:
                 out_data = query.collect.verbed.get()
                 collect_out_edges = self._graph.out_edges(query.collect.to_verb[0])
                 for edge in collect_out_edges:
@@ -252,7 +257,7 @@ class AbstractCachedRaster(AbstractRaster):
         while self._new_queries:
             new_query = self._new_queries.pop(0)
 
-            for to_produce in new_quert.produce.to_verb:
+            for to_produce in new_query.produce.to_verb:
                 self._graph.add_node(to_produce)
                 new_query.read.to_verb.append(self._to_read_of_to_produce(to_produce))
                 for to_read in new_query.read.to_verb:
@@ -271,9 +276,14 @@ class AbstractCachedRaster(AbstractRaster):
                                 self._graph.add_node(to_collect)
                                 self._graph.add_edge(to_collect, to_compute)
 
+            new_query.collect.verbed = self._collect_data(new_query.collect.to_verb)
 
 
-
+    def _collect_data(self, to_collect):
+        results = []
+        for primitive, to_collect_batch in zip(self._primitives, to_collect):
+            results.append(primitive.get_data(to_collect_batch))
+        return results
 
     def _clean_graph(self):
         self._graph.remove_nodes_from(nx.isolates(self._graph))
