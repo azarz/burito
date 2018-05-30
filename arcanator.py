@@ -62,7 +62,12 @@ def output_fp_to_input_fp(fp, scale, rsize):
     out = out.dilate(padding)
     return out
 
+class DummyFuture(object):
+    def ready():
+        return False
 
+    def get():
+        raise NotImplementedError()
 
 class AbstractRaster(object):
 
@@ -80,6 +85,7 @@ class AbstractRaster(object):
 
         self._computation_pool = mp.pool.ThreadPool()
         self._io_pool = mp.pool.ThreadPool()
+        self._produce_pool = mp.pool.ThreadPool()
 
         self._thread_storage = threading.local()
     
@@ -180,6 +186,14 @@ class AbstractCachedRaster(AbstractRaster):
 
         self._graph = nx.DiGraph()
 
+        def _uids_generator():
+            _id = 0
+            while True:
+                yield _id
+                _id += 1
+
+        self._uids = _uids_generator()
+
 
     def _get_cache_tile_path(self, cache_tile):
         path = str(
@@ -188,7 +202,6 @@ class AbstractCachedRaster(AbstractRaster):
             "{:.2f}_{:.2f}_{:.2f}_{}".format(*cache_tile.tl, cache_tile.pxsizex, cache_tile.rsizex)
         )
         return path
-
 
     def _read_cache_data(self, cache_tile):
         ds = buzz.DataSource(allow_interpolation=True)
@@ -226,28 +239,39 @@ class AbstractCachedRaster(AbstractRaster):
             if not one_is_empty:
                 for collected_primitive in range(len(query.collect.verbed)):
                     out_data.append(query.collect.verbed[collected_primitive].get())
-                    
+
                 collect_out_edges = self._graph.out_edges(query.collect.to_verb[0])
                 for edge in collect_out_edges:
-                    edge[1].future = self._computation_pool.apply_async(self._compute_data, (edge[1].footprint, *out_data))
+                    self._graph.nodes[edge[1]]["future"] = self._computation_pool.apply_async(
+                        self._compute_data, 
+                        (self._graph.nodes[edge[1]]["footprint"], *out_data)
+                    )
                     self._graph.remove_edge(edge)
 
                 continue
+
 
             for index, to_produce in enumerate(query.produce.to_verb):
                 node = to_produce
                 while len(self._graph.in_edges(node)) > 0
                     node = list(self._graph.in_edges(node))[0][0]
 
-                if index == 0 and node == to_produce:
-                    query.produce.verbed.put(node.future.get())
-
                 if not node.future.ready():
                     continue
 
+                if index == 0 and node == to_produce:
+                    query.produce.verbed.put(node["future"].get())
+                    query.produce.to_verb.pop(0)
+
                 out_edges = self._graph.out_edges(node)
                 for out_edge in out_edges:
-                    out_edge[1].future = out_edge.pool.apply_async(out_edge.function, (out_edge.footprint, node.future.get()))
+                    self._graph.nodes[out_edge[1]]["future"] = out_edge["pool"].apply_async(
+                        out_edge["function"], 
+                        (
+                            self._graph.nodes[out_edge[1]]["footprint"], 
+                            node.future.get()
+                        )
+                    )
                     self._graph.remove_edge(out_edge)
 
                 break
@@ -260,23 +284,32 @@ class AbstractCachedRaster(AbstractRaster):
             new_query = self._new_queries.pop(0)
 
             for to_produce in new_query.produce.to_verb:
-                self._graph.add_node(to_produce)
+                to_produce_uid = next(self._uids)
+                self._graph.add_node(to_produce_uid, footprint=to_produce, future=DummyFuture())
                 new_query.read.to_verb.append(self._to_read_of_to_produce(to_produce))
+
                 for to_read in new_query.read.to_verb:
-                    self._graph.add_node(to_read)
-                    self._graph.add_edge(to_read, to_produce)
+                    to_read_uid = next(self._uids)
+                    self._graph.add_node(to_read_uid, footprint=to_read, future=DummyFuture())
+                    self._graph.add_edge(to_read_uid, to_produce_uid, pool=self._produce_pool, function=self._produce_data)
                     new_query.write.to_verb.append(self._to_write_of_to_read(to_read))
+
                     for to_write in new_query.write.to_verb:
-                        self._graph.add_node(to_write)
-                        self._graph.add_edge(to_write, to_read)
+                        to_write_uid = next(self._uids)
+                        self._graph.add_node(to_write_uid, footprint=to_write, future=DummyFuture())
+                        self._graph.add_edge(to_write_uid, to_read_uid, pool=self._io_pool, function=self._read_cache_data)
                         new_query.compute.to_verb.append(self._to_compute_of_to_write(to_write))
+
                         for to_compute in new_query.compute.to_verb:
-                            self._graph.add_node(to_compute)
-                            self._graph.add_edge(to_compute, to_write)
+                            to_compute_uid = next(self._uids)
+                            self._graph.add_node(to_compute_uid, footprint=to_compute, future=DummyFuture())
+                            self._graph.add_edge(to_compute_uid, to_write_uid, pool=self._io_pool, function=self._write_cache_data)
                             new_query.collect.to_verb.append(self._to_collect_of_to_compute(to_compute))
+
                             for to_collect in new_query.collect.to_verb:
-                                self._graph.add_node(to_collect)
-                                self._graph.add_edge(to_collect, to_compute)
+                                to_collect_uid = next(self._uids)
+                                self._graph.add_node(to_collect_uid, footprints=to_collect, future=DummyFuture())
+                                self._graph.add_edge(to_collect_uid, to_compute_uid, pool=self._io_pool)
 
             new_query.collect.verbed = self._collect_data(new_query.collect.to_verb)
 
