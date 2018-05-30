@@ -224,10 +224,12 @@ class AbstractCachedRaster(AbstractRaster):
 
 
             if not one_is_empty:
-                out_data = query.collect.verbed.get()
+                for collected_primitive in range(len(query.collect.verbed)):
+                    out_data.append(query.collect.verbed[collected_primitive].get())
+                    
                 collect_out_edges = self._graph.out_edges(query.collect.to_verb[0])
                 for edge in collect_out_edges:
-                    edge[1].future = self._computation_pool.apply_async(self._compute_data, (edge.footprint, *out_data))
+                    edge[1].future = self._computation_pool.apply_async(self._compute_data, (edge[1].footprint, *out_data))
                     self._graph.remove_edge(edge)
 
                 continue
