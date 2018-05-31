@@ -220,7 +220,9 @@ class AbstractCachedRaster(AbstractRaster):
     def _scheduler(self):
         print(self.__class__.__name__, " scheduler in ", threading.currentThread().getName())
 
-        while True:      
+        while True:
+            if not self._queries:
+                continue      
             self._update_graph_from_queries()
 
             ordered_queries = sorted(self._queries, key=self._pressure_ratio)
@@ -249,7 +251,7 @@ class AbstractCachedRaster(AbstractRaster):
 
             for index, to_produce in enumerate(query.produce.to_verb):
                 node = to_produce
-                while len(self._graph.in_edges(node)) > 0
+                while len(self._graph.in_edges(node)) > 0:
                     node = list(self._graph.in_edges(node))[0][0]
 
                 if not node.future.ready():
@@ -349,7 +351,7 @@ class AbstractCachedRaster(AbstractRaster):
         return to_read_list
 
     def _is_written(self, cache_fp):
-        return os.path.isfile(self._get_cache_tile_path(to_read)):
+        return os.path.isfile(self._get_cache_tile_path(to_read))
 
     def _to_compute_of_to_write(self, fp_list):
         to_compute_list = []
@@ -572,6 +574,8 @@ class HeatmapRaster(AbstractCachedRaster):
         self._double_tiled_structure = DoubleTiledStructure(list(self._cache_tiles_fps.flat), list(self._computation_tiles.flat), self._computation_method)
         self._lock = threading.Lock()
 
+        self._computation_pool = mp.pool.ThreadPool(1)
+
 
     def _to_collect_of_1_to_compute(self, unique_fp):
         rgba_tile = output_fp_to_input_fp(unique_fp, 0.64, self._model.get_layer("rgb").input_shape[1])
@@ -579,7 +583,7 @@ class HeatmapRaster(AbstractCachedRaster):
         return [rgba_tile, dsm_tile]
 
 
-    def _computation_method(self, computation_tile, rgba_data, slope_ data):
+    def _computation_method(self, computation_tile, rgba_data, slope_data):
         rgb_data = np.where((rgba_data[...,3] == 255)[...,np.newaxis], rgba_data, 0)[...,0:3]
         rgb = (rgb_data.astype('float32') - 127.5) / 127.5
 
@@ -647,10 +651,18 @@ def main():
     # dsm_out = resampled_dsm.get_multi_data(dsm_display_tiles.flat, 5)
     slopes_out = slopes.get_multi_data(dsm_display_tiles.flat, 5)
 
+    def out_generator():
+        for fp in fp_iterable:
+            assert fp.same_grid(self.fp)
+            result = slopes_out.get()
+            assert np.array_equal(fp.shape, result.shape[0:2])
+            yield result
+
+    slopes_out_gen = out_generator()
 
     for display_fp, dsm_disp_fp in zip(display_tiles.flat, dsm_display_tiles.flat):
         try:
-            next(slopes_out)
+            next(slopes_out_gen)
             # next(slopes_out)
             # show_many_images(
             #     [next(rgba_out), next(slopes_out)[...,0],np.argmax(next(hm_out), axis=-1)], 
