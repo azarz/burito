@@ -186,15 +186,7 @@ class AbstractCachedRaster(AbstractRaster):
 
         self._graph = nx.DiGraph()
 
-        def _uids_generator():
-            _id = 0
-            while True:
-                yield _id
-                _id += 1
-
-        self._uids = _uids_generator()
-
-
+        
     def _get_cache_tile_path(self, cache_tile):
         path = str(
             Path(CACHE_DIR) / 
@@ -203,7 +195,7 @@ class AbstractCachedRaster(AbstractRaster):
         )
         return path
 
-    def _read_cache_data(self, cache_tile):
+    def _read_cache_data(self, cache_tile, placeholder=None):
         ds = buzz.DataSource(allow_interpolation=True)
         filepath = self._get_cache_tile_path(cache_tile)
 
@@ -219,6 +211,10 @@ class AbstractCachedRaster(AbstractRaster):
         out_proxy = ds.create_araster(filepath, cache_tile, data.dtype, self._num_bands, driver="GTiff", sr=self._primitives[0].wkt_origin)
         out_proxy.set_data(data, band=-1)
         out_proxy.close()
+
+
+    def _get_graph_uid(self, fp, _type):
+        return hash(repr(fp) + _type)
 
 
     def _scheduler(self):
@@ -284,30 +280,49 @@ class AbstractCachedRaster(AbstractRaster):
             new_query = self._new_queries.pop(0)
 
             for to_produce in new_query.produce.to_verb:
-                to_produce_uid = next(self._uids)
+                to_produce_uid = self._get_graph_uid(to_produce, "to_produce")
                 self._graph.add_node(to_produce_uid, footprint=to_produce, future=DummyFuture())
-                new_query.read.to_verb.append(self._to_read_of_to_produce(to_produce))
+                to_read_tiles = self._to_read_of_to_produce(to_produce)
+                new_query.read.to_verb.append(to_read_tiles)
 
-                for to_read in new_query.read.to_verb:
-                    to_read_uid = next(self._uids)
-                    self._graph.add_node(to_read_uid, footprint=to_read, future=DummyFuture())
-                    self._graph.add_edge(to_read_uid, to_produce_uid, pool=self._produce_pool, function=self._produce_data)
-                    new_query.write.to_verb.append(self._to_write_of_to_read(to_read))
+                for to_read in to_read_tiles:
+                    to_read_uid = self._get_graph_uid(to_read, "to_read")
 
-                    for to_write in new_query.write.to_verb:
-                        to_write_uid = next(self._uids)
+                    if self._is_written(to_read):
+                        self._graph.add_node(
+                            to_read_uid, 
+                            footprint=to_read, 
+                            future=self._io_pool.apply_async(
+                                self._read_cache_data, 
+                                to_read
+                            )
+                        )
+
+                        self._graph.add_edge(to_read_uid, to_produce_uid, pool=self._produce_pool, function=self._produce_data)
+
+                    else:
+                        to_write = to_read
+
+                        self._graph.add_node(to_read_uid, footprint=to_read, future=DummyFuture())
+                        self._graph.add_edge(to_read_uid, to_produce_uid, pool=self._produce_pool, function=self._produce_data)
+
+                        new_query.write.to_verb.append(to_write)
+
+                        to_write_uid = self._get_graph_uid(to_write, "to_write")
+
                         self._graph.add_node(to_write_uid, footprint=to_write, future=DummyFuture())
                         self._graph.add_edge(to_write_uid, to_read_uid, pool=self._io_pool, function=self._read_cache_data)
-                        new_query.compute.to_verb.append(self._to_compute_of_to_write(to_write))
+                        new_query.compute.to_verb.append(self._to_compute_of_to_write([to_write]))
 
                         for to_compute in new_query.compute.to_verb:
-                            to_compute_uid = next(self._uids)
+                            to_compute_uid = self._get_graph_uid(to_compute, "to_compute")
+
                             self._graph.add_node(to_compute_uid, footprint=to_compute, future=DummyFuture())
                             self._graph.add_edge(to_compute_uid, to_write_uid, pool=self._io_pool, function=self._write_cache_data)
-                            new_query.collect.to_verb.append(self._to_collect_of_to_compute(to_compute))
+                            new_query.collect.to_verb.append(self._to_collect_of_1_to_compute(to_compute))
 
                             for to_collect in new_query.collect.to_verb:
-                                to_collect_uid = next(self._uids)
+                                to_collect_uid = self._get_graph_uid(to_collect, "to_collect")
                                 self._graph.add_node(to_collect_uid, footprints=to_collect, future=DummyFuture())
                                 self._graph.add_edge(to_collect_uid, to_compute_uid, pool=self._io_pool)
 
@@ -322,6 +337,32 @@ class AbstractCachedRaster(AbstractRaster):
 
     def _clean_graph(self):
         self._graph.remove_nodes_from(nx.isolates(self._graph))
+
+    def _to_read_of_to_produce(self, fp_list):
+        to_read_list = []
+        for to_produce in fp_list:
+            for cache_tile in self._cache_tiles:
+                if to_produce.share_area(cache_tile):
+                    to_read_list.append(cache_tile)
+
+        return to_read_list
+
+    def _is_written(self, cache_fp):
+        return os.path.isfile(self._get_cache_tile_path(to_read)):
+
+    def _to_compute_of_to_write(self, fp_list):
+        to_compute_list = []
+        for write in fp_list:
+            for computation_tile in self._computation_tiles:
+                if write.share_area(computation_tile):
+                    to_compute_list.append(computation_tile)
+
+        return to_compute_list
+
+
+    def _to_collect_of_1_to_compute(self, unique_fp):
+        raise NotImplementedError()
+
 
 
 
