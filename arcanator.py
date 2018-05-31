@@ -319,8 +319,9 @@ class AbstractCachedRaster(AbstractRaster):
 
                             self._graph.add_node(to_compute_uid, footprint=to_compute, future=DummyFuture())
                             self._graph.add_edge(to_compute_uid, to_write_uid, pool=self._io_pool, function=self._write_cache_data)
-                            new_query.collect.to_verb.append(self._to_collect_of_1_to_compute(to_compute))
-
+                            multi_to_collect = self._to_collect_of_1_to_compute(to_compute)
+                            for index, to_collect_primitive in enumerate(multi_to_collect):
+                                new_query.collect.to_verb[index].append(to_collect_primitive)
                             for to_collect in new_query.collect.to_verb:
                                 to_collect_uid = self._get_graph_uid(to_collect, "to_collect")
                                 self._graph.add_node(to_collect_uid, footprints=to_collect, future=DummyFuture())
@@ -572,13 +573,13 @@ class HeatmapRaster(AbstractCachedRaster):
         self._lock = threading.Lock()
 
 
+    def _to_collect_of_1_to_compute(self, unique_fp):
+        rgba_tile = output_fp_to_input_fp(unique_fp, 0.64, self._model.get_layer("rgb").input_shape[1])
+        dsm_tile = output_fp_to_input_fp(unique_fp, 1.28, self._model.get_layer("slopes").input_shape[1])
+        return [rgba_tile, dsm_tile]
+
+
     def _computation_method(self, computation_tile, rgba_data, slope_ data):
-        # rgba_tile = output_fp_to_input_fp(computation_tile, 0.64, self._model.get_layer("rgb").input_shape[1])
-        # dsm_tile = output_fp_to_input_fp(computation_tile, 1.28, self._model.get_layer("slopes").input_shape[1])
-
-        # rgba_data = self._collect_rgba_data(rgba_tile)
-        # slope_data = self._collect_slope_data(dsm_tile)
-
         rgb_data = np.where((rgba_data[...,3] == 255)[...,np.newaxis], rgba_data, 0)[...,0:3]
         rgb = (rgb_data.astype('float32') - 127.5) / 127.5
 
