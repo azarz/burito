@@ -52,6 +52,13 @@ DIR_NAMES = {
 
 CACHE_DIR = "./.cache"
 
+STEP_NAME_INDEX = {
+    0: "to_produce",
+    1: "to_read",
+    2: "to_write",
+    3: "to_compute",
+    4: "to_collect"
+}
 
 
 def output_fp_to_input_fp(fp, scale, rsize):
@@ -181,7 +188,7 @@ class AbstractCachedRaster(AbstractRaster):
         self._rtype = rtype
 
         tile_count = np.ceil(self._full_fp.rsize / 500) 
-        self._cache_tiles_fps = self._full_fp.tile_count(*tile_count, boundary_effect='shrink')
+        self._cache_tiles = self._full_fp.tile_count(*tile_count, boundary_effect='shrink')
 
         self._graph = nx.DiGraph()
 
@@ -249,14 +256,14 @@ class AbstractCachedRaster(AbstractRaster):
 
 
             for index, to_produce in enumerate(query.produce.to_verb):
-                node = to_produce
+                node = self._get_graph_uid(to_produce, "to_produce")
                 while len(self._graph.in_edges(node)) > 0:
                     node = list(self._graph.in_edges(node))[0][0]
 
                 if not node.future.ready():
                     continue
 
-                if index == 0 and node == to_produce:
+                if index == 0 and node == self._get_graph_uid(to_produce, "to_produce"):
                     query.produce.verbed.put(node["future"].get())
                     query.produce.to_verb.pop(0)
 
@@ -279,6 +286,7 @@ class AbstractCachedRaster(AbstractRaster):
     def _update_graph_from_queries(self):
         while self._new_queries:
             new_query = self._new_queries.pop(0)
+            new_query.collect.to_verb = [[] for p in self._primitives]
 
             for to_produce in new_query.produce.to_verb:
                 to_produce_uid = self._get_graph_uid(to_produce, "to_produce")
@@ -313,16 +321,18 @@ class AbstractCachedRaster(AbstractRaster):
 
                         self._graph.add_node(to_write_uid, footprint=to_write, future=DummyFuture())
                         self._graph.add_edge(to_write_uid, to_read_uid, pool=self._io_pool, function=self._read_cache_data)
-                        new_query.compute.to_verb.append(self._to_compute_of_to_write([to_write]))
+                        new_query.compute.to_verb.append(self._to_compute_of_to_write(to_write))
 
                         for to_compute in new_query.compute.to_verb:
                             to_compute_uid = self._get_graph_uid(to_compute, "to_compute")
 
                             self._graph.add_node(to_compute_uid, footprint=to_compute, future=DummyFuture())
                             self._graph.add_edge(to_compute_uid, to_write_uid, pool=self._io_pool, function=self._write_cache_data)
-                            multi_to_collect = self._to_collect_of_1_to_compute(to_compute)
+                            multi_to_collect = self._to_collect_of_to_compute(to_compute)
+
                             for index, to_collect_primitive in enumerate(multi_to_collect):
                                 new_query.collect.to_verb[index].append(to_collect_primitive)
+
                             for to_collect in new_query.collect.to_verb:
                                 to_collect_uid = self._get_graph_uid(to_collect, "to_collect")
                                 self._graph.add_node(to_collect_uid, footprints=to_collect, future=DummyFuture())
@@ -340,29 +350,27 @@ class AbstractCachedRaster(AbstractRaster):
     def _clean_graph(self):
         self._graph.remove_nodes_from(nx.isolates(self._graph))
 
-    def _to_read_of_to_produce(self, fp_list):
+    def _to_read_of_to_produce(self, fp):
         to_read_list = []
-        for to_produce in fp_list:
-            for cache_tile in self._cache_tiles:
-                if to_produce.share_area(cache_tile):
-                    to_read_list.append(cache_tile)
+        for cache_tile in self._cache_tiles.flat:
+            if fp.share_area(cache_tile):
+                to_read_list.append(cache_tile)
 
         return to_read_list
 
     def _is_written(self, cache_fp):
-        return os.path.isfile(self._get_cache_tile_path(to_read))
+        return os.path.isfile(self._get_cache_tile_path(cache_fp))
 
-    def _to_compute_of_to_write(self, fp_list):
+    def _to_compute_of_to_write(self, fp):
         to_compute_list = []
-        for write in fp_list:
-            for computation_tile in self._computation_tiles:
-                if write.share_area(computation_tile):
-                    to_compute_list.append(computation_tile)
+        for computation_tile in self._computation_tiles.flat:
+            if fp.share_area(computation_tile):
+                to_compute_list.append(computation_tile)
 
         return to_compute_list
 
 
-    def _to_collect_of_1_to_compute(self, unique_fp):
+    def _to_collect_of_to_compute(self, unique_fp):
         raise NotImplementedError()
 
 
@@ -440,7 +448,7 @@ class ResampledRaster(AbstractCachedRaster):
         super().__init__(full_fp, rtype)
 
         tile_count = np.ceil(self._full_fp.rsize / 500) 
-        self._cache_tiles_fps = self._full_fp.tile_count(*tile_count, boundary_effect='shrink')
+        self._cache_tiles = self._full_fp.tile_count(*tile_count, boundary_effect='shrink')
         self._num_bands = len(raster)
         self._nodata = raster.nodata
         self._wkt_origin = raster.wkt_origin
@@ -466,6 +474,9 @@ class ResampledRaster(AbstractCachedRaster):
 
         assert np.array_equal(input_fp.shape, data.shape[0:2])
         return data
+
+    def _to_collect_of_to_compute(self, unique_fp):
+        return [unique_fp]
 
 
 
@@ -567,14 +578,14 @@ class HeatmapRaster(AbstractCachedRaster):
         self._computation_tiles = self._full_fp.tile(np.asarray(model.outputs[0].shape[1:3]).T)
 
         tile_count = np.ceil(self._full_fp.rsize / 500) 
-        self._cache_tiles_fps = self._full_fp.tile_count(*tile_count, boundary_effect='shrink')
+        self._cache_tiles = self._full_fp.tile_count(*tile_count, boundary_effect='shrink')
 
         self._lock = threading.Lock()
 
         self._computation_pool = mp.pool.ThreadPool(1)
 
 
-    def _to_collect_of_1_to_compute(self, unique_fp):
+    def _to_collect_of_to_compute(self, unique_fp):
         rgba_tile = output_fp_to_input_fp(unique_fp, 0.64, self._model.get_layer("rgb").input_shape[1])
         dsm_tile = output_fp_to_input_fp(unique_fp, 1.28, self._model.get_layer("slopes").input_shape[1])
         return [rgba_tile, dsm_tile]
@@ -645,17 +656,17 @@ def main():
 
     # hm_out = hmr.get_multi_data(display_tiles.flat, 5)
     # rgba_out = resampled_rgba.get_multi_data(display_tiles.flat, 5)
-    # dsm_out = resampled_dsm.get_multi_data(dsm_display_tiles.flat, 5)
+    dsm_out = resampled_dsm.get_multi_data(dsm_display_tiles.flat, 5)
     slopes_out = slopes.get_multi_data(dsm_display_tiles.flat, 5)
 
-    def out_generator():
-        for fp in fp_iterable:
-            assert fp.same_grid(self.fp)
-            result = slopes_out.get()
+    def out_generator(tiles, out_q):
+        for fp in tiles.flat:
+            result = out_q.get()
             assert np.array_equal(fp.shape, result.shape[0:2])
             yield result
 
-    slopes_out_gen = out_generator()
+    slopes_out_gen = out_generator(dsm_display_tiles, slopes_out)
+    dsm_out_gen = out_generator(dsm_display_tiles, dsm_out)
 
     for display_fp, dsm_disp_fp in zip(display_tiles.flat, dsm_display_tiles.flat):
         try:
