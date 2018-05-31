@@ -326,10 +326,10 @@ class AbstractCachedRaster(AbstractRaster):
 
                         self._graph.add_node(to_write_uid, footprint=to_write, future=DummyFuture())
                         self._graph.add_edge(to_write_uid, to_read_uid, pool=self._io_pool, function=self._read_cache_data)
-                        new_query.compute.to_verb.append(self._to_compute_of_to_write(to_write))
+                        to_compute_multi = self._to_compute_of_to_write(to_write)
+                        new_query.compute.to_verb.append(to_compute_multi)
 
-                        for to_compute in new_query.compute.to_verb:
-                            print(len(new_query.compute.to_verb))
+                        for to_compute in to_compute_multi:
                             to_compute_uid = self._get_graph_uid(to_compute, "to_compute")
 
                             self._graph.add_node(to_compute_uid, footprint=to_compute, future=DummyFuture())
@@ -339,7 +339,7 @@ class AbstractCachedRaster(AbstractRaster):
                             for index, to_collect_primitive in enumerate(multi_to_collect):
                                 new_query.collect.to_verb[index].append(to_collect_primitive)
 
-                            for to_collect in new_query.collect.to_verb:
+                            for to_collect in multi_to_collect:
                                 to_collect_uid = self._get_graph_uid(to_collect, "to_collect")
                                 self._graph.add_node(to_collect_uid, footprints=to_collect, future=DummyFuture())
                                 self._graph.add_edge(to_collect_uid, to_compute_uid, pool=self._io_pool)
@@ -348,6 +348,12 @@ class AbstractCachedRaster(AbstractRaster):
 
 
     def _collect_data(self, to_collect):
+        # in: [
+        #    [to_collect_p1_1, ..., to_collect_p1_n],
+        #    ...,
+        #    [to_collect_pp_1, ..., to_collect_pp_n]
+        #]
+        # out: [queue_1, queue_2] CHANGE HERE
         results = []
         for primitive, to_collect_batch in zip(self._primitives, to_collect):
             results.append(primitive.get_data(to_collect_batch))
@@ -376,7 +382,7 @@ class AbstractCachedRaster(AbstractRaster):
         return to_compute_list
 
 
-    def _to_collect_of_to_compute(self, unique_fp):
+    def _to_collect_of_to_compute(self, fp):
         raise NotImplementedError()
 
 
@@ -467,21 +473,23 @@ class ResampledRaster(AbstractCachedRaster):
         print(self.__class__.__name__, " computing data ", threading.currentThread().getName())
         return self._collect_data(input_fp)
 
-    def _collect_data(self, input_fp):
+
+    def _collect_data(self, input_fps):
+        output_queue = queue.Queue(5)
         if not hasattr(self._thread_storage, "ds"):
             ds = buzz.DataSource(allow_interpolation=True)
             self._thread_storage.ds = ds
         else:
             ds = self._thread_storage.ds
 
-        with ds.open_araster(self._primitives[0].path).close as prim:
-            data = prim.get_data(input_fp)
+        for input_fp in input_fps[0]:
+            with ds.open_araster(self._primitives[0].path).close as prim:
+                output_queue.put(prim.get_data(input_fp))
 
-        assert np.array_equal(input_fp.shape, data.shape[0:2])
-        return data
+        return output_queue
 
-    def _to_collect_of_to_compute(self, unique_fp):
-        return [unique_fp]
+    def _to_collect_of_to_compute(self, fp):
+        return [fp]
 
 
 
