@@ -235,6 +235,7 @@ class AbstractCachedRaster(AbstractRaster):
 
             print(self.__class__.__name__, " yes queries ", threading.currentThread().getName())
             self._update_graph_from_queries()
+            print(self.__class__.__name__, " yes queries2 ", threading.currentThread().getName())
 
             ordered_queries = sorted(self._queries, key=self._pressure_ratio)
             query = ordered_queries[0]
@@ -344,6 +345,7 @@ class AbstractCachedRaster(AbstractRaster):
                                 self._graph.add_node(to_collect_uid, footprints=to_collect, future=DummyFuture())
                                 self._graph.add_edge(to_collect_uid, to_compute_uid, pool=self._io_pool)
 
+            # c'est cette ligne qui fait planter :
             new_query.collect.verbed = self._collect_data(new_query.collect.to_verb)
 
 
