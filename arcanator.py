@@ -17,6 +17,7 @@ import scipy.ndimage as ndi
 import numpy as np
 import shapely.geometry as sg
 import networkx as nx
+import matplotlib.pyplot as plt
 
 from show_many_images import show_many_images
 from uids_of_paths import uids_of_paths
@@ -176,7 +177,8 @@ class AbstractRaster(object):
 
 
     def get_data(self, fp):
-        return next(self.get_multi_data([fp]))
+        # return next(self.get_multi_data([fp]))
+        return self.get_multi_data([fp]).get()
     
 
 
@@ -227,8 +229,11 @@ class AbstractCachedRaster(AbstractRaster):
         print(self.__class__.__name__, " scheduler in ", threading.currentThread().getName())
 
         while True:
+            time.sleep(1e-2)
             if not self._queries:
                 continue      
+
+            print(self.__class__.__name__, " yes queries ", threading.currentThread().getName())
             self._update_graph_from_queries()
 
             ordered_queries = sorted(self._queries, key=self._pressure_ratio)
@@ -324,6 +329,7 @@ class AbstractCachedRaster(AbstractRaster):
                         new_query.compute.to_verb.append(self._to_compute_of_to_write(to_write))
 
                         for to_compute in new_query.compute.to_verb:
+                            print(len(new_query.compute.to_verb))
                             to_compute_uid = self._get_graph_uid(to_compute, "to_compute")
 
                             self._graph.add_node(to_compute_uid, footprint=to_compute, future=DummyFuture())
@@ -455,7 +461,6 @@ class ResampledRaster(AbstractCachedRaster):
         self._dtype = raster.dtype
 
         self._primitives = [raster]
-        self.path = raster.path
     
     
     def _computation_method(self, input_fp):
@@ -539,15 +544,7 @@ class Slopes(AbstractNotCachedRaster):
 
 
     def _collect_data(self, input_fp):
-        if not hasattr(self._thread_storage, "ds"):
-            ds = buzz.DataSource(allow_interpolation=True)
-            self._thread_storage.ds = ds
-        else:
-            ds = self._thread_storage.ds
-
-        with ds.open_araster(self._primitives[0].path).close as prim:
-            data = prim.get_data(input_fp.dilate(1))
-
+        data = self._primitives[0].get_data(input_fp.dilate(1))
         return data
 
 
