@@ -23,7 +23,6 @@ from uids_of_paths import uids_of_paths
 from watcher import Watcher
 
 from Query import FullQuery
-from DoubleTiledStructure import DoubleTiledStructure
 
 CATEGORIES = (
    #0        1       2        3        4
@@ -447,9 +446,8 @@ class ResampledRaster(AbstractCachedRaster):
         self._wkt_origin = raster.wkt_origin
         self._dtype = raster.dtype
 
-        self._double_tiled_structure = DoubleTiledStructure(list(self._cache_tiles_fps.flat), list(self._computation_tiles.flat), self._computation_method)
-
         self._primitives = [raster]
+        self.path = raster.path
     
     
     def _computation_method(self, input_fp):
@@ -571,7 +569,6 @@ class HeatmapRaster(AbstractCachedRaster):
         tile_count = np.ceil(self._full_fp.rsize / 500) 
         self._cache_tiles_fps = self._full_fp.tile_count(*tile_count, boundary_effect='shrink')
 
-        self._double_tiled_structure = DoubleTiledStructure(list(self._cache_tiles_fps.flat), list(self._computation_tiles.flat), self._computation_method)
         self._lock = threading.Lock()
 
         self._computation_pool = mp.pool.ThreadPool(1)
