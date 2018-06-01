@@ -234,7 +234,13 @@ class AbstractCachedRaster(AbstractRaster):
         filepath = self._get_cache_tile_path(cache_tile)
         ds = buzz.DataSource(allow_interpolation=True)
 
-        out_proxy = ds.create_araster(filepath, cache_tile, data.dtype, self._num_bands, driver="GTiff", sr=self._primitives[self._primitives.keys()[0]].wkt_origin)
+        out_proxy = ds.create_araster(filepath,
+                                      cache_tile,
+                                      data.dtype,
+                                      self._num_bands,
+                                      driver="GTiff",
+                                      sr=self._primitives[self._primitives.keys()[0]].wkt_origin
+                                     )
         out_proxy.set_data(data, band=-1)
         out_proxy.close()
 
@@ -251,31 +257,40 @@ class AbstractCachedRaster(AbstractRaster):
             if not self._queries:
                 continue
 
-            print(self.__class__.__name__, " yes queries ", threading.currentThread().getName())
             self._update_graph_from_queries()
-            print(self.__class__.__name__, " yes queries2 ", threading.currentThread().getName())
+
+            print(self.__class__.__name__, " loop ", threading.currentThread().getName())
 
             # ordering queries accroding to their pressure
             ordered_queries = sorted(self._queries, key=self._pressure_ratio)
             # getting the emptiest query
             query = ordered_queries[0]
 
+            print(len(query.compute.to_verb))
+
             # testing if at least 1 of the collected queues is empty (1 queue per primitive)
             one_is_empty = False
-            for collected_primitive in query.collect.verbed:
+            for primitive in self._primitives.keys():
+                collected_primitive = query.collect.verbed[primitive]
+                print(collected_primitive.qsize())
                 if collected_primitive.empty():
                     one_is_empty = True
 
+            print(self.__class__.__name__, " loop 22 ", threading.currentThread().getName())
+
             # if they are all full
             if not one_is_empty:
+                print(self.__class__.__name__, " loop 55 ", threading.currentThread().getName())
                 # getting all the collected data
                 collected_data = []
-                for collected_primitive in range(len(query.collect.verbed)):
+                for collected_primitive in query.collect.verbed.keys():
                     collected_data.append(query.collect.verbed[collected_primitive].get())
 
                 # for each graph edge out of the collected, applying the asyncresult to the out node
-                collect_out_edges = self._graph.out_edges(query.collect.to_verb[0])
-                # TODO PB HERE: collect_out_eges doesnt correspond to what we want (see the graph building of collect nodes)
+                collect_out_edges = []
+                for prim in self._primitives.keys():
+                    collect_out_edges.append(self._graph.out_edges(self._get_graph_uid(query.collect.to_verb[prim][0], "to_collect")))
+
                 for edge in collect_out_edges:
                     self._graph.nodes[edge[1]]["future"] = self._computation_pool.apply_async(
                         self._compute_data,
@@ -334,7 +349,7 @@ class AbstractCachedRaster(AbstractRaster):
             #    [to_collect_pp_1, ..., to_collect_pp_n]
             # ]
             # with p # of primitives and n # of to_compute fps
-            new_query.collect.to_verb = [[] for p in self._primitives.keys()]
+            new_query.collect.to_verb = {key: [] for key in self._primitives.keys()}
 
             for to_produce in new_query.produce.to_verb:
                 to_produce_uid = self._get_graph_uid(to_produce, "to_produce")
@@ -379,8 +394,8 @@ class AbstractCachedRaster(AbstractRaster):
                             self._graph.add_edge(to_compute_uid, to_write_uid, pool=self._io_pool, function=self._write_cache_data)
                             multi_to_collect = self._to_collect_of_to_compute(to_compute)
 
-                            for index, to_collect_primitive in enumerate(multi_to_collect):
-                                new_query.collect.to_verb[index].append(to_collect_primitive)
+                            for key, to_collect_primitive in zip(self._primitives.keys(), multi_to_collect):
+                                new_query.collect.to_verb[key].append(to_collect_primitive)
 
                             for to_collect in multi_to_collect:
                                 to_collect_uid = self._get_graph_uid(to_collect, "to_collect")
@@ -397,9 +412,9 @@ class AbstractCachedRaster(AbstractRaster):
         #    [to_collect_pp_1, ..., to_collect_pp_n]
         #]
         # out: [queue_1, queue_2, ..., queue_p] CHANGE HERE
-        results = []
+        results = {}
         for primitive, to_collect_batch in zip(self._primitives.keys(), to_collect):
-            results.append(self._primitives[primitive].get_multi_data(to_collect_batch))
+            results[primitive] = self._primitives[primitive].get_multi_data(to_collect_batch)
         return results
 
     def _clean_graph(self):
@@ -518,67 +533,6 @@ class ResampledRaster(AbstractCachedRaster):
 
 
 
-    def _update_graph_from_queries(self):
-        """
-        Updates the dependency graph from the new queries
-        """
-
-        while self._new_queries:
-            new_query = self._new_queries.pop(0)
-
-            # [
-            #    [to_collect_p1_1, ..., to_collect_p1_n],
-            #    ...,
-            #    [to_collect_pp_1, ..., to_collect_pp_n]
-            # ]
-            # with p # of primitives and n # of to_compute fps
-            new_query.collect.to_verb = [[] for p in self._primitives.keys()]
-            new_query.collect.verbed = [queue.Queue() for p in self._primitives.keys()]
-
-            for to_produce in new_query.produce.to_verb:
-                to_produce_uid = self._get_graph_uid(to_produce, "to_produce")
-                self._graph.add_node(to_produce_uid, footprint=to_produce, future=DummyFuture())
-                to_read_tiles = self._to_read_of_to_produce(to_produce)
-                new_query.read.to_verb.append(to_read_tiles)
-
-                for to_read in to_read_tiles:
-                    to_read_uid = self._get_graph_uid(to_read, "to_read")
-
-                    if self._is_written(to_read):
-                        self._graph.add_node(
-                            to_read_uid,
-                            footprint=to_read,
-                            future=self._io_pool.apply_async(
-                                self._read_cache_data,
-                                to_read
-                            )
-                        )
-
-                        self._graph.add_edge(to_read_uid, to_produce_uid, pool=self._produce_pool, function=self._produce_data)
-
-                    else:
-                        to_write = to_read
-
-                        self._graph.add_node(to_read_uid, footprint=to_read, future=DummyFuture())
-                        self._graph.add_edge(to_read_uid, to_produce_uid, pool=self._produce_pool, function=self._produce_data)
-
-                        new_query.write.to_verb.append(to_write)
-
-                        to_write_uid = self._get_graph_uid(to_write, "to_write")
-
-                        self._graph.add_node(to_write_uid, footprint=to_write, future=DummyFuture())
-                        self._graph.add_edge(to_write_uid, to_read_uid, pool=self._io_pool, function=self._read_cache_data)
-                        to_compute_multi = self._to_compute_of_to_write(to_write)
-                        new_query.compute.to_verb.append(to_compute_multi)
-
-                        for to_compute in to_compute_multi:
-                            to_compute_uid = self._get_graph_uid(to_compute, "to_compute")
-
-                            self._graph.add_node(to_compute_uid, footprint=to_compute, future=DummyFuture())
-                            self._graph.add_edge(to_compute_uid, to_write_uid, pool=self._io_pool, function=self._write_cache_data)
-
-
-
     def _compute_data(self, footprint, data):
         print(self.__class__.__name__, " computing data ", threading.currentThread().getName())
 
@@ -590,6 +544,12 @@ class ResampledRaster(AbstractCachedRaster):
             with ds.open_araster(self._primitives["primitive"].path).close as prim:
                 data = prim.get_data(footprint)
         return data
+
+    def _collect_data(self, to_collect):
+        result = queue.Queue()
+        for p in to_collect:
+            result.put([])
+        return {"primitive": result}
 
     def _to_collect_of_to_compute(self, fp):
         return [fp]
