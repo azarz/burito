@@ -412,8 +412,8 @@ class AbstractCachedRaster(AbstractRaster):
         #]
         # out: [queue_1, queue_2, ..., queue_p] CHANGE HERE
         results = {}
-        for primitive, to_collect_batch in zip(self._primitives.keys(), to_collect):
-            results[primitive] = self._primitives[primitive].get_multi_data(to_collect_batch)
+        for primitive in elf._primitives.keys():
+            results[primitive] = self._primitives[primitive].get_multi_data(to_collect[primitive])
         return results
 
     def _clean_graph(self):
@@ -546,7 +546,7 @@ class ResampledRaster(AbstractCachedRaster):
 
     def _collect_data(self, to_collect):
         result = queue.Queue()
-        for p in to_collect:
+        for p in to_collect["primitive"]:
             result.put([])
         return {"primitive": result}
 
