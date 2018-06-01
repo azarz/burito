@@ -23,29 +23,29 @@ from watcher import Watcher
 from Query import FullQuery
 
 CATEGORIES = (
-   #0        1       2        3        4
-   'nolab', 'vege', 'water', 'tapis', 'building',
-   #5         6        7           8         9
-   'blocks', 'berms', 'vehicles', 'stocks', 'aggregate',
-   #10       11       12
-   'faces', 'roads', 'bank',
+    #0        1       2        3        4
+    'nolab', 'vege', 'water', 'tapis', 'building',
+    #5         6        7           8         9
+    'blocks', 'berms', 'vehicles', 'stocks', 'aggregate',
+    #10       11       12
+    'faces', 'roads', 'bank',
 )
 INDEX_OF_LABNAME = {}
 LABEL_COUNT = len(CATEGORIES)
 for i, cat in enumerate(CATEGORIES):
-   globals()['INDEX_' + cat.upper()] = i
-   INDEX_OF_LABNAME[cat] = i
+    globals()['INDEX_' + cat.upper()] = i
+    INDEX_OF_LABNAME[cat] = i
 
 
 
 # DIR_NAMES = uids_of_paths({
 #     "ortho": rgb_path,
 #     "dsm": dsm_path
-# })  
+# })
 DIR_NAMES = {
     frozenset(["ortho"]): "rgb",
     frozenset(["dsm"]): "dsm",
-    frozenset(["ortho","dsm"]): "both"
+    frozenset(["ortho", "dsm"]): "both"
 }
 
 CACHE_DIR = "./.cache"
@@ -62,7 +62,7 @@ STEP_NAME_INDEX = {
 def output_fp_to_input_fp(fp, scale, rsize):
     """
     Creates a footprint of rsize from fp using dilation and scale
-    Used to compute a keras model input footprint from output 
+    Used to compute a keras model input footprint from output
     (deduce the big RGB and slopes extents from the smaller output heatmap)
     """
     out = buzz.Footprint(tl=fp.tl, size=fp.size, rsize=fp.size/scale)
@@ -91,26 +91,22 @@ class AbstractRaster(object):
     """
     Abstract class defining the raster behaviour
     """
-    def __init__(self, full_fp, cached):
+    def __init__(self, full_fp):
         self._queries = []
         self._new_queries = []
-        self._primitives = []
-
-        self._cached = cached
+        self._primitives = {}
 
         self._scheduler_thread = threading.Thread(target=self._scheduler, daemon=True)
-
         self._scheduler_thread.start()
-        self._cv = threading.Condition()
 
         self._computation_pool = mp.pool.ThreadPool()
         self._io_pool = mp.pool.ThreadPool()
         self._produce_pool = mp.pool.ThreadPool()
 
         self._thread_storage = threading.local()
-   
+
         self._full_fp = full_fp
-   
+
         self._num_bands = None  # to implement in subclasses
         self._nodata = None     # to implement in subclasses
         self._wkt_origin = None # to implement in subclasses
@@ -118,7 +114,7 @@ class AbstractRaster(object):
 
 
         comp_tile_count = np.ceil(self._full_fp.rsize / 500)
-        self._computation_tiles = self._full_fp.tile_count(*comp_tile_count, boundary_effect='shrink')            
+        self._computation_tiles = self._full_fp.tile_count(*comp_tile_count, boundary_effect='shrink')
 
 
     def _pressure_ratio(self, query):
@@ -130,7 +126,7 @@ class AbstractRaster(object):
         return num/den
 
     def _scheduler(self):
-        raise NotImplementedError('Should be implemented by all subclasses')    
+        raise NotImplementedError('Should be implemented by all subclasses')
 
     def _prepare_query(self, query):
         return
@@ -141,7 +137,7 @@ class AbstractRaster(object):
 
     @property
     def nodata(self):
-        return self._nodata    
+        return self._nodata
 
     @property
     def wkt_origin(self):
@@ -154,17 +150,17 @@ class AbstractRaster(object):
     @property
     def pxsizex(self):
         return self._full_fp.pxsizex
-  
-  
+
+
 
     def __len__(self):
         return int(self._num_bands)
-  
+
 
     def _produce_data(self, input_fp):
         raise NotImplementedError('Should be implemented by all subclasses')
 
-    def _compute_data(self, data):
+    def _compute_data(self, compute_fp, data):
         raise NotImplementedError('Should be implemented by all subclasses')
 
     def get_multi_data(self, fp_iterable, queue_size=5):
@@ -195,7 +191,6 @@ class AbstractRaster(object):
     def get_data(self, fp):
         # return next(self.get_multi_data([fp]))
         return self.get_multi_data([fp]).get()
-    
 
 
 
@@ -205,22 +200,22 @@ class AbstractCachedRaster(AbstractRaster):
     Cached implementation of abstract raster
     """
     def __init__(self, full_fp, rtype):
-        super().__init__(full_fp, True)
+        super().__init__(full_fp)
         self._rtype = rtype
 
-        tile_count = np.ceil(self._full_fp.rsize / 500) 
+        tile_count = np.ceil(self._full_fp.rsize / 500)
         self._cache_tiles = self._full_fp.tile_count(*tile_count, boundary_effect='shrink')
 
         self._graph = nx.DiGraph()
 
-        
+
     def _get_cache_tile_path(self, cache_tile):
         """
         Returns a string, which is a path to a cache tile from its fp
         """
         path = str(
-            Path(CACHE_DIR) / 
-            DIR_NAMES[frozenset({*self._rtype})] / 
+            Path(CACHE_DIR) /
+            DIR_NAMES[frozenset({*self._rtype})] /
             "{:.2f}_{:.2f}_{:.2f}_{}".format(*cache_tile.tl, cache_tile.pxsizex, cache_tile.rsizex)
         )
         return path
@@ -239,7 +234,7 @@ class AbstractCachedRaster(AbstractRaster):
         filepath = self._get_cache_tile_path(cache_tile)
         ds = buzz.DataSource(allow_interpolation=True)
 
-        out_proxy = ds.create_araster(filepath, cache_tile, data.dtype, self._num_bands, driver="GTiff", sr=self._primitives[0].wkt_origin)
+        out_proxy = ds.create_araster(filepath, cache_tile, data.dtype, self._num_bands, driver="GTiff", sr=self._primitives[self._primitives.keys()[0]].wkt_origin)
         out_proxy.set_data(data, band=-1)
         out_proxy.close()
 
@@ -254,7 +249,7 @@ class AbstractCachedRaster(AbstractRaster):
         while True:
             time.sleep(1e-2)
             if not self._queries:
-                continue      
+                continue
 
             print(self.__class__.__name__, " yes queries ", threading.currentThread().getName())
             self._update_graph_from_queries()
@@ -274,17 +269,17 @@ class AbstractCachedRaster(AbstractRaster):
             # if they are all full
             if not one_is_empty:
                 # getting all the collected data
-                collected = []
+                collected_data = []
                 for collected_primitive in range(len(query.collect.verbed)):
-                    collected.append(query.collect.verbed[collected_primitive].get())
+                    collected_data.append(query.collect.verbed[collected_primitive].get())
 
                 # for each graph edge out of the collected, applying the asyncresult to the out node
                 collect_out_edges = self._graph.out_edges(query.collect.to_verb[0])
                 # TODO PB HERE: collect_out_eges doesnt correspond to what we want (see the graph building of collect nodes)
                 for edge in collect_out_edges:
                     self._graph.nodes[edge[1]]["future"] = self._computation_pool.apply_async(
-                        self._compute_data, 
-                        *collected
+                        self._compute_data,
+                        (self._graph.nodes[edge[1]]["footprint"], *collected_data)
                     )
                     self._graph.remove_edge(edge)
 
@@ -294,26 +289,27 @@ class AbstractCachedRaster(AbstractRaster):
             for index, to_produce in enumerate(query.produce.to_verb):
                 # beginning at to_produce
                 node = self._get_graph_uid(to_produce, "to_produce")
+                node = self._graph.nodes[node]
                 # going as deep as possible (upstream the edges)
                 while len(self._graph.in_edges(node)) > 0:
                     node = list(self._graph.in_edges(node))[0][0]
 
-                if not node.future.ready():
+                if not node["future"].ready():
                     continue
 
                 # if the deepest is to_produce, updating produced
                 if index == 0 and node == self._get_graph_uid(to_produce, "to_produce"):
                     query.produce.verbed.put(node["future"].get())
                     query.produce.to_verb.pop(0)
-                    continue                   
+                    continue
 
-                # 
+                # applying the corresponding function
                 out_edges = self._graph.out_edges(node)
                 for out_edge in out_edges:
                     self._graph.nodes[out_edge[1]]["future"] = out_edge["pool"].apply_async(
-                        out_edge["function"], 
+                        out_edge["function"],
                         (
-                            self._graph.nodes[out_edge[1]]["footprint"], 
+                            self._graph.nodes[out_edge[1]]["footprint"],
                             node.future.get()
                         )
                     )
@@ -338,7 +334,7 @@ class AbstractCachedRaster(AbstractRaster):
             #    [to_collect_pp_1, ..., to_collect_pp_n]
             # ]
             # with p # of primitives and n # of to_compute fps
-            new_query.collect.to_verb = [[] for p in self._primitives]
+            new_query.collect.to_verb = [[] for p in self._primitives.keys()]
 
             for to_produce in new_query.produce.to_verb:
                 to_produce_uid = self._get_graph_uid(to_produce, "to_produce")
@@ -351,10 +347,10 @@ class AbstractCachedRaster(AbstractRaster):
 
                     if self._is_written(to_read):
                         self._graph.add_node(
-                            to_read_uid, 
-                            footprint=to_read, 
+                            to_read_uid,
+                            footprint=to_read,
                             future=self._io_pool.apply_async(
-                                self._read_cache_data, 
+                                self._read_cache_data,
                                 to_read
                             )
                         )
@@ -400,10 +396,10 @@ class AbstractCachedRaster(AbstractRaster):
         #    ...,
         #    [to_collect_pp_1, ..., to_collect_pp_n]
         #]
-        # out: [queue_1, queue_2] CHANGE HERE
+        # out: [queue_1, queue_2, ..., queue_p] CHANGE HERE
         results = []
-        for primitive, to_collect_batch in zip(self._primitives, to_collect):
-            results.append(primitive.get_data(to_collect_batch))
+        for primitive, to_collect_batch in zip(self._primitives.keys(), to_collect):
+            results.append(self._primitives[primitive].get_multi_data(to_collect_batch))
         return results
 
     def _clean_graph(self):
@@ -442,7 +438,7 @@ class AbstractCachedRaster(AbstractRaster):
 
 class AbstractNotCachedRaster(AbstractRaster):
     def __init__(self, full_fp):
-        super().__init__(full_fp, False)
+        super().__init__(full_fp)
 
 
     def _scheduler(self):
@@ -483,8 +479,7 @@ class AbstractNotCachedRaster(AbstractRaster):
     def _to_produce_to_to_compute(self, query):
         if not query.produce.to_verb:
             return
-        elif self._cached:
-            raise RuntimeError()
+
         else:
             for to_produce in query.produce.to_verb:
                 query.compute.to_verb.append(to_produce)
@@ -509,36 +504,92 @@ class ResampledRaster(AbstractCachedRaster):
     def __init__(self, raster, scale, rtype):
 
         full_fp = raster.fp.intersection(raster.fp, scale=scale, alignment=(0, 0))
-    
+
         super().__init__(full_fp, rtype)
 
-        tile_count = np.ceil(self._full_fp.rsize / 500) 
+        tile_count = np.ceil(self._full_fp.rsize / 500)
         self._cache_tiles = self._full_fp.tile_count(*tile_count, boundary_effect='shrink')
         self._num_bands = len(raster)
         self._nodata = raster.nodata
         self._wkt_origin = raster.wkt_origin
         self._dtype = raster.dtype
 
-        self._primitives = [raster]
-    
-    
-    def _compute_data(self, data):
+        self._primitives = {"primitive": raster}
+
+
+
+    def _update_graph_from_queries(self):
+        """
+        Updates the dependency graph from the new queries
+        """
+
+        while self._new_queries:
+            new_query = self._new_queries.pop(0)
+
+            # [
+            #    [to_collect_p1_1, ..., to_collect_p1_n],
+            #    ...,
+            #    [to_collect_pp_1, ..., to_collect_pp_n]
+            # ]
+            # with p # of primitives and n # of to_compute fps
+            new_query.collect.to_verb = [[] for p in self._primitives.keys()]
+            new_query.collect.verbed = [queue.Queue() for p in self._primitives.keys()]
+
+            for to_produce in new_query.produce.to_verb:
+                to_produce_uid = self._get_graph_uid(to_produce, "to_produce")
+                self._graph.add_node(to_produce_uid, footprint=to_produce, future=DummyFuture())
+                to_read_tiles = self._to_read_of_to_produce(to_produce)
+                new_query.read.to_verb.append(to_read_tiles)
+
+                for to_read in to_read_tiles:
+                    to_read_uid = self._get_graph_uid(to_read, "to_read")
+
+                    if self._is_written(to_read):
+                        self._graph.add_node(
+                            to_read_uid,
+                            footprint=to_read,
+                            future=self._io_pool.apply_async(
+                                self._read_cache_data,
+                                to_read
+                            )
+                        )
+
+                        self._graph.add_edge(to_read_uid, to_produce_uid, pool=self._produce_pool, function=self._produce_data)
+
+                    else:
+                        to_write = to_read
+
+                        self._graph.add_node(to_read_uid, footprint=to_read, future=DummyFuture())
+                        self._graph.add_edge(to_read_uid, to_produce_uid, pool=self._produce_pool, function=self._produce_data)
+
+                        new_query.write.to_verb.append(to_write)
+
+                        to_write_uid = self._get_graph_uid(to_write, "to_write")
+
+                        self._graph.add_node(to_write_uid, footprint=to_write, future=DummyFuture())
+                        self._graph.add_edge(to_write_uid, to_read_uid, pool=self._io_pool, function=self._read_cache_data)
+                        to_compute_multi = self._to_compute_of_to_write(to_write)
+                        new_query.compute.to_verb.append(to_compute_multi)
+
+                        for to_compute in to_compute_multi:
+                            to_compute_uid = self._get_graph_uid(to_compute, "to_compute")
+
+                            self._graph.add_node(to_compute_uid, footprint=to_compute, future=DummyFuture())
+                            self._graph.add_edge(to_compute_uid, to_write_uid, pool=self._io_pool, function=self._write_cache_data)
+
+
+
+    def _compute_data(self, footprint, data):
         print(self.__class__.__name__, " computing data ", threading.currentThread().getName())
-        return data
 
-
-    def _collect_data(self, input_fps):
-        output_queue = queue.Queue()
         if not hasattr(self._thread_storage, "ds"):
             ds = buzz.DataSource(allow_interpolation=True)
             self._thread_storage.ds = ds
         else:
             ds = self._thread_storage.ds
-        for input_fp in input_fps[0]:
-            with ds.open_araster(self._primitives[0].path).close as prim:
-                output_queue.put(prim.get_data(input_fp))
-            print(output_queue.qsize())
-        return [output_queue]
+            with ds.open_araster(self._primitives["primitive"].path).close as prim:
+                data = prim.get_data(footprint)
+        return data
 
     def _to_collect_of_to_compute(self, fp):
         return [fp]
@@ -549,7 +600,7 @@ class ResampledRaster(AbstractCachedRaster):
 
 
 class ResampledOrthoimage(ResampledRaster):
-    
+
     def __init__(self, raster, scale):
         super().__init__(raster, scale, ("ortho",))
 
@@ -557,7 +608,7 @@ class ResampledOrthoimage(ResampledRaster):
 
 
 class ResampledDSM(ResampledRaster):
-    
+
     def __init__(self, raster, scale):
         super().__init__(raster, scale, ("dsm",))
         self._dtype = "float32"
@@ -565,16 +616,13 @@ class ResampledDSM(ResampledRaster):
 
 
 
-
-
-
 class Slopes(AbstractNotCachedRaster):
     def __init__(self, dsm):
         super().__init__(dsm.fp)
-        self._primitives = [dsm]
+        self._primitives = {"dsm": dsm}
         self._nodata = dsm.nodata
         self._num_bands = 2
-        self._dtype = "float32"    
+        self._dtype = "float32"
 
 
     def _compute_data(self, data):
@@ -604,7 +652,7 @@ class Slopes(AbstractNotCachedRaster):
 
 
     def _collect_data(self, input_fp):
-        data = self._primitives[0].get_data(input_fp.dilate(1))
+        data = self._primitives["dsm"].get_data(input_fp.dilate(1))
         return data
 
 
@@ -617,7 +665,7 @@ class HeatmapRaster(AbstractCachedRaster):
 
         max_scale = max(resampled_rgba.fp.scale[0], slopes.fp.scale[0])
         min_scale = min(resampled_rgba.fp.scale[0], slopes.fp.scale[0])
-      
+
         full_fp = resampled_rgba.fp.intersection(slopes.fp, scale=max_scale, alignment=(0, 0))
 
         super().__init__(full_fp, ("dsm", "ortho"))
@@ -628,13 +676,13 @@ class HeatmapRaster(AbstractCachedRaster):
         self._model = model
         self._num_bands = LABEL_COUNT
 
-        self._primitives = [resampled_rgba, slopes]
-      
+        self._primitives = {"rgba": resampled_rgba, "slopes": slopes}
+
         self._full_fp = self._full_fp.intersection(self._full_fp, scale=min_scale)
 
         self._computation_tiles = self._full_fp.tile(np.asarray(model.outputs[0].shape[1:3]).T)
 
-        tile_count = np.ceil(self._full_fp.rsize / 500) 
+        tile_count = np.ceil(self._full_fp.rsize / 500)
         self._cache_tiles = self._full_fp.tile_count(*tile_count, boundary_effect='shrink')
 
         self._lock = threading.Lock()
@@ -649,7 +697,7 @@ class HeatmapRaster(AbstractCachedRaster):
 
 
     def _compute_data(self, rgba_data, slope_data):
-        rgb_data = np.where((rgba_data[...,3] == 255)[...,np.newaxis], rgba_data, 0)[...,0:3]
+        rgb_data = np.where((rgba_data[..., 3] == 255)[..., np.newaxis], rgba_data, 0)[..., 0:3]
         rgb = (rgb_data.astype('float32') - 127.5) / 127.5
 
         slopes = slope_data / 45 - 1
@@ -658,14 +706,6 @@ class HeatmapRaster(AbstractCachedRaster):
             prediction = self._model.predict([rgb[np.newaxis], slopes[np.newaxis]])[0]
 
         return prediction
-
-
-    def _collect_rgba_data(self, input_fp):
-        self._primitives[0].get_data(input_fp)
-
-    def _collect_slope_data(self, input_fp):
-        self._primitives[0].get_data(input_fp)
-
 
 
 
