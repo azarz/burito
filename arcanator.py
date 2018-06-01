@@ -287,16 +287,15 @@ class AbstractCachedRaster(AbstractRaster):
                     collected_data.append(query.collect.verbed[collected_primitive].get())
 
                 # for each graph edge out of the collected, applying the asyncresult to the out node
-                collect_out_edges = []
                 for prim in self._primitives.keys():
-                    collect_out_edges.append(self._graph.out_edges(self._get_graph_uid(query.collect.to_verb[prim][0], "to_collect")))
-
-                for edge in collect_out_edges:
-                    self._graph.nodes[edge[1]]["future"] = self._computation_pool.apply_async(
-                        self._compute_data,
-                        (self._graph.nodes[edge[1]]["footprint"], *collected_data)
-                    )
-                    self._graph.remove_edge(edge)
+                    collect_out_edges = (self._graph.out_edges(self._get_graph_uid(query.collect.to_verb[prim][0], "to_collect")))
+                    print(collect_out_edges)
+                    for edge in collect_out_edges:
+                        self._graph.nodes[edge[1]]["future"] = self._computation_pool.apply_async(
+                            self._compute_data,
+                            (self._graph.nodes[edge[1]]["footprint"], *collected_data)
+                        )
+                        self._graph.remove_edge(*edge)
 
                 continue
 
