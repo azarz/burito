@@ -288,8 +288,8 @@ class AbstractCachedRaster(AbstractRaster):
 
                 # for each graph edge out of the collected, applying the asyncresult to the out node
                 for prim in self._primitives.keys():
-                    collect_out_edges = (self._graph.out_edges(self._get_graph_uid(query.collect.to_verb[prim][0], "to_collect")))
-                    print(collect_out_edges)
+                    collect_out_edges = (self._graph.copy().out_edges(self._get_graph_uid(query.collect.to_verb[prim][0], "to_collect")))
+
                     for edge in collect_out_edges:
                         self._graph.nodes[edge[1]]["future"] = self._computation_pool.apply_async(
                             self._compute_data,
@@ -417,7 +417,7 @@ class AbstractCachedRaster(AbstractRaster):
         return results
 
     def _clean_graph(self):
-        self._graph.remove_nodes_from(nx.isolates(self._graph))
+        self._graph.remove_nodes_from(list(nx.isolates(self._graph)))
 
     def _to_read_of_to_produce(self, fp):
         to_read_list = []
