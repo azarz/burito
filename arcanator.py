@@ -278,7 +278,6 @@ class AbstractCachedRaster(AbstractRaster):
             # if they are all full
             if not one_is_empty:
                 # getting all the collected data
-                print(self.__class__.__name__, " getting all the collected data ", threading.currentThread().getName())
                 collected_data = []
                 for collected_primitive in query.collect.verbed.keys():
                     collected_data.append(query.collect.verbed[collected_primitive].get())
@@ -302,17 +301,19 @@ class AbstractCachedRaster(AbstractRaster):
             for index, to_produce in enumerate(query.produce.to_verb):
                 # beginning at to_produce
                 node_id = self._get_graph_uid(to_produce, "to_produce")
-                print(node_id)
                 # going as deep as possible (upstream the edges)
+                print(node_id)
                 while len(self._graph.in_edges(node_id)) > 0:
                     node_id = list(self._graph.in_edges(node_id))[0][0]
+                    print(node_id)
 
                 node = self._graph.nodes[node_id]
                 if not node["future"].ready():
                     continue
 
                 # if the deepest is to_produce, updating produced
-                if index == 0 and node == self._get_graph_uid(to_produce, "to_produce"):
+                if index == 0 and node_id == self._get_graph_uid(to_produce, "to_produce"):
+                    print("hello")
                     query.produce.verbed.put(node["future"].get())
                     query.produce.to_verb.pop(0)
                     continue
@@ -373,7 +374,7 @@ class AbstractCachedRaster(AbstractRaster):
 
                         self._graph.add_edge(to_read_uid, to_produce_uid, pool=self._produce_pool, function=self._produce_data)
 
-                    # else, creating the graph to write it
+                    # else, creating the graph to write the tile
                     else:
                         to_write = to_read
 
@@ -419,7 +420,12 @@ class AbstractCachedRaster(AbstractRaster):
         return results
 
     def _clean_graph(self):
-        self._graph.remove_nodes_from(list(nx.isolates(self._graph)))
+        to_remove = list(nx.isolates(self._graph))
+        for query in self._queries:
+            for to_produce in query.produce.to_verb:
+                to_produce_uid = self._get_graph_uid(to_produce, "to_produce")
+                while to_produce_uid in to_remove: to_remove.remove(to_produce_uid)
+        self._graph.remove_nodes_from(to_remove)
 
     def _to_read_of_to_produce(self, fp):
         to_read_list = []
