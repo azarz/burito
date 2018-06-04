@@ -15,6 +15,7 @@ import numpy as np
 import shapely.geometry as sg
 import networkx as nx
 import buzzard as buzz
+import matplotlib.pyplot as plt
 
 from show_many_images import show_many_images
 from uids_of_paths import uids_of_paths
@@ -231,6 +232,7 @@ class AbstractCachedRaster(AbstractRaster):
 
 
     def _write_cache_data(self, cache_tile, data):
+        print(self.__class__.__name__, " writing in ", threading.currentThread().getName())
         filepath = self._get_cache_tile_path(cache_tile)
         ds = buzz.DataSource(allow_interpolation=True)
 
@@ -243,6 +245,7 @@ class AbstractCachedRaster(AbstractRaster):
                                      )
         out_proxy.set_data(data, band=-1)
         out_proxy.close()
+        print(self.__class__.__name__, " writing out ", threading.currentThread().getName())
 
 
     def _get_graph_uid(self, fp, _type):
@@ -259,29 +262,23 @@ class AbstractCachedRaster(AbstractRaster):
 
             self._update_graph_from_queries()
 
-            print(self.__class__.__name__, " loop ", threading.currentThread().getName())
-
             # ordering queries accroding to their pressure
             ordered_queries = sorted(self._queries, key=self._pressure_ratio)
             # getting the emptiest query
             query = ordered_queries[0]
 
-            print(len(query.compute.to_verb))
-
             # testing if at least 1 of the collected queues is empty (1 queue per primitive)
             one_is_empty = False
             for primitive in self._primitives.keys():
                 collected_primitive = query.collect.verbed[primitive]
-                print(collected_primitive.qsize())
                 if collected_primitive.empty():
                     one_is_empty = True
 
-            print(self.__class__.__name__, " loop 22 ", threading.currentThread().getName())
 
             # if they are all full
             if not one_is_empty:
-                print(self.__class__.__name__, " loop 55 ", threading.currentThread().getName())
                 # getting all the collected data
+                print(self.__class__.__name__, " getting all the collected data ", threading.currentThread().getName())
                 collected_data = []
                 for collected_primitive in query.collect.verbed.keys():
                     collected_data.append(query.collect.verbed[collected_primitive].get())
@@ -297,17 +294,19 @@ class AbstractCachedRaster(AbstractRaster):
                         )
                         self._graph.remove_edge(*edge)
 
+                    query.collect.to_verb[prim].pop(0)
+
                 continue
 
             # iterating through the graph
             for index, to_produce in enumerate(query.produce.to_verb):
                 # beginning at to_produce
                 node = self._get_graph_uid(to_produce, "to_produce")
-                node = self._graph.nodes[node]
                 # going as deep as possible (upstream the edges)
                 while len(self._graph.in_edges(node)) > 0:
                     node = list(self._graph.in_edges(node))[0][0]
 
+                node = self._graph.nodes[node]
                 if not node["future"].ready():
                     continue
 
@@ -348,6 +347,8 @@ class AbstractCachedRaster(AbstractRaster):
             #    [to_collect_pp_1, ..., to_collect_pp_n]
             # ]
             # with p # of primitives and n # of to_compute fps
+
+            # initializing to_collect dictionnary
             new_query.collect.to_verb = {key: [] for key in self._primitives.keys()}
 
             for to_produce in new_query.produce.to_verb:
@@ -359,6 +360,7 @@ class AbstractCachedRaster(AbstractRaster):
                 for to_read in to_read_tiles:
                     to_read_uid = self._get_graph_uid(to_read, "to_read")
 
+                    # if the tile is written, only reading it
                     if self._is_written(to_read):
                         self._graph.add_node(
                             to_read_uid,
@@ -371,12 +373,12 @@ class AbstractCachedRaster(AbstractRaster):
 
                         self._graph.add_edge(to_read_uid, to_produce_uid, pool=self._produce_pool, function=self._produce_data)
 
+                    # else, creating the graph to write it
                     else:
                         to_write = to_read
 
                         self._graph.add_node(to_read_uid, footprint=to_read, future=DummyFuture())
                         self._graph.add_edge(to_read_uid, to_produce_uid, pool=self._produce_pool, function=self._produce_data)
-
                         new_query.write.to_verb.append(to_write)
 
                         to_write_uid = self._get_graph_uid(to_write, "to_write")
@@ -412,7 +414,7 @@ class AbstractCachedRaster(AbstractRaster):
         #]
         # out: [queue_1, queue_2, ..., queue_p] CHANGE HERE
         results = {}
-        for primitive in elf._primitives.keys():
+        for primitive in self._primitives.keys():
             results[primitive] = self._primitives[primitive].get_multi_data(to_collect[primitive])
         return results
 
@@ -542,6 +544,7 @@ class ResampledRaster(AbstractCachedRaster):
             ds = self._thread_storage.ds
             with ds.open_araster(self._primitives["primitive"].path).close as prim:
                 data = prim.get_data(footprint)
+        print(self.__class__.__name__, " computed data ", threading.currentThread().getName())
         return data
 
     def _collect_data(self, to_collect):
