@@ -158,8 +158,8 @@ class AbstractRaster(object):
         return int(self._num_bands)
 
 
-    def _produce_data(self, input_fp, data):
-        raise NotImplementedError('Should be implemented by all subclasses')
+    def _produce_data(self, produce_fp, to_burn_data, cache_fp, produced_data):
+        produced_data[cache_fp.slice_in(produce_fp, clip=True)] = to_burn_data[produce_fp.slice_in(cache_fp, clip=True)]
 
     def _compute_data(self, compute_fp, data):
         raise NotImplementedError('Should be implemented by all subclasses')
@@ -289,12 +289,14 @@ class AbstractCachedRaster(AbstractRaster):
                     for edge in collect_out_edges:
                         self._graph.nodes[edge[1]]["future"] = self._computation_pool.apply_async(
                             self._compute_data,
-                            (self._graph.nodes[edge[1]]["footprint"], *collected_data)
+                            (
+                                self._graph.nodes[edge[1]]["footprint"],
+                                *collected_data
+                            )
                         )
                         self._graph.remove_edge(*edge)
 
                     query.collect.to_verb[prim].pop(0)
-
                 continue
 
             # iterating through the graph
@@ -302,10 +304,8 @@ class AbstractCachedRaster(AbstractRaster):
                 # beginning at to_produce
                 node_id = self._get_graph_uid(to_produce, "to_produce")
                 # going as deep as possible (upstream the edges)
-                print(node_id)
                 while len(self._graph.in_edges(node_id)) > 0:
                     node_id = list(self._graph.in_edges(node_id))[0][0]
-                    print(node_id)
 
                 node = self._graph.nodes[node_id]
                 if not node["future"].ready():
@@ -313,21 +313,35 @@ class AbstractCachedRaster(AbstractRaster):
 
                 # if the deepest is to_produce, updating produced
                 if index == 0 and node_id == self._get_graph_uid(to_produce, "to_produce"):
-                    query.produce.verbed.put(node["future"].get())
+                    query.produce.verbed.put(node["data"])
                     query.produce.to_verb.pop(0)
+                    self._graph.remove_node(node_id)
                     continue
 
                 # applying the corresponding function
                 out_edges = self._graph.copy().out_edges(node_id, data=True)
-                for out_edge in out_edges:
-                    self._graph.nodes[out_edge[1]]["future"] = out_edge[2]["pool"].apply_async(
-                        out_edge[2]["function"],
-                        (
-                            self._graph.nodes[out_edge[1]]["footprint"],
-                            node["future"].get()
+                if node["type"] == "to_read":
+                    for out_edge in out_edges:
+                        self._graph.nodes[out_edge[1]]["future"] = out_edge[2]["pool"].apply_async(
+                            out_edge[2]["function"],
+                            (
+                                self._graph.nodes[out_edge[1]]["footprint"],
+                                node["future"].get(),
+                                self._graph.nodes[out_edge[0]]["footprint"],
+                                self._graph.nodes[out_edge[1]]["data"]
+                            )
                         )
-                    )
-                    self._graph.remove_edge(out_edge[0], out_edge[1])
+                        self._graph.remove_edge(out_edge[0], out_edge[1])
+                else:
+                    for out_edge in out_edges:
+                        self._graph.nodes[out_edge[1]]["future"] = out_edge[2]["pool"].apply_async(
+                            out_edge[2]["function"],
+                            (
+                                self._graph.nodes[out_edge[1]]["footprint"],
+                                node["future"].get()
+                            )
+                        )
+                        self._graph.remove_edge(out_edge[0], out_edge[1])
                 break
 
             self._clean_graph()
@@ -353,7 +367,7 @@ class AbstractCachedRaster(AbstractRaster):
 
             for to_produce in new_query.produce.to_verb:
                 to_produce_uid = self._get_graph_uid(to_produce, "to_produce")
-                self._graph.add_node(to_produce_uid, footprint=to_produce, future=DummyFuture())
+                self._graph.add_node(to_produce_uid, footprint=to_produce, data=np.zeros(to_produce.shape), type="to_produce")
                 to_read_tiles = self._to_read_of_to_produce(to_produce)
                 new_query.read.to_verb.append(to_read_tiles)
 
@@ -368,7 +382,8 @@ class AbstractCachedRaster(AbstractRaster):
                             future=self._io_pool.apply_async(
                                 self._read_cache_data,
                                 (to_read,)
-                            )
+                            ),
+                            type="to_read"
                         )
 
                         self._graph.add_edge(to_read_uid, to_produce_uid, pool=self._produce_pool, function=self._produce_data)
@@ -377,13 +392,13 @@ class AbstractCachedRaster(AbstractRaster):
                     else:
                         to_write = to_read
 
-                        self._graph.add_node(to_read_uid, footprint=to_read, future=DummyFuture())
+                        self._graph.add_node(to_read_uid, footprint=to_read, future=DummyFuture(), type="to_read")
                         self._graph.add_edge(to_read_uid, to_produce_uid, pool=self._produce_pool, function=self._produce_data)
                         new_query.write.to_verb.append(to_write)
 
                         to_write_uid = self._get_graph_uid(to_write, "to_write")
 
-                        self._graph.add_node(to_write_uid, footprint=to_write, future=DummyFuture())
+                        self._graph.add_node(to_write_uid, footprint=to_write, future=DummyFuture(), type="to_write")
                         self._graph.add_edge(to_write_uid, to_read_uid, pool=self._io_pool, function=self._read_cache_data)
                         to_compute_multi = self._to_compute_of_to_write(to_write)
                         new_query.compute.to_verb.append(to_compute_multi)
@@ -391,7 +406,7 @@ class AbstractCachedRaster(AbstractRaster):
                         for to_compute in to_compute_multi:
                             to_compute_uid = self._get_graph_uid(to_compute, "to_compute")
 
-                            self._graph.add_node(to_compute_uid, footprint=to_compute, future=DummyFuture())
+                            self._graph.add_node(to_compute_uid, footprint=to_compute, future=DummyFuture(), type="to_compute")
                             self._graph.add_edge(to_compute_uid, to_write_uid, pool=self._io_pool, function=self._write_cache_data)
                             multi_to_collect = self._to_collect_of_to_compute(to_compute)
 
@@ -400,7 +415,7 @@ class AbstractCachedRaster(AbstractRaster):
 
                             for to_collect in multi_to_collect:
                                 to_collect_uid = self._get_graph_uid(to_collect, "to_collect")
-                                self._graph.add_node(to_collect_uid, footprints=to_collect, future=DummyFuture())
+                                self._graph.add_node(to_collect_uid, footprints=to_collect, future=DummyFuture(), type="to_collect")
                                 self._graph.add_edge(to_collect_uid, to_compute_uid, pool=self._io_pool)
 
             new_query.collect.verbed = self._collect_data(new_query.collect.to_verb)
@@ -423,7 +438,8 @@ class AbstractCachedRaster(AbstractRaster):
         for query in self._queries:
             for to_produce in query.produce.to_verb:
                 to_produce_uid = self._get_graph_uid(to_produce, "to_produce")
-                while to_produce_uid in to_remove: to_remove.remove(to_produce_uid)
+                while to_produce_uid in to_remove:
+                    to_remove.remove(to_produce_uid)
         self._graph.remove_nodes_from(to_remove)
 
     def _to_read_of_to_produce(self, fp):
@@ -722,7 +738,7 @@ def main():
     # hm_out = hmr.get_multi_data(display_tiles.flat, 5)
     # rgba_out = resampled_rgba.get_multi_data(display_tiles.flat, 5)
     dsm_out = resampled_dsm.get_multi_data(dsm_display_tiles.flat, 5)
-    slopes_out = slopes.get_multi_data(dsm_display_tiles.flat, 5)
+    # slopes_out = slopes.get_multi_data(dsm_display_tiles.flat, 5)
 
     def out_generator(tiles, out_q):
         for fp in tiles.flat:
@@ -730,12 +746,12 @@ def main():
             assert np.array_equal(fp.shape, result.shape[0:2])
             yield result
 
-    slopes_out_gen = out_generator(dsm_display_tiles, slopes_out)
+    # slopes_out_gen = out_generator(dsm_display_tiles, slopes_out)
     dsm_out_gen = out_generator(dsm_display_tiles, dsm_out)
 
     for display_fp, dsm_disp_fp in zip(display_tiles.flat, dsm_display_tiles.flat):
         try:
-            next(slopes_out_gen)
+            next(dsm_out_gen)
             # next(slopes_out)
             # show_many_images(
             #     [next(rgba_out), next(slopes_out)[...,0],np.argmax(next(hm_out), axis=-1)], 
