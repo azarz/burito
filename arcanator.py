@@ -158,7 +158,7 @@ class AbstractRaster(object):
         return int(self._num_bands)
 
 
-    def _produce_data(self, input_fp):
+    def _produce_data(self, input_fp, data):
         raise NotImplementedError('Should be implemented by all subclasses')
 
     def _compute_data(self, compute_fp, data):
@@ -222,7 +222,7 @@ class AbstractCachedRaster(AbstractRaster):
         return path
 
 
-    def _read_cache_data(self, cache_tile, placeholder=None):
+    def _read_cache_data(self, cache_tile, _placeholder=None):
         ds = buzz.DataSource(allow_interpolation=True)
         filepath = self._get_cache_tile_path(cache_tile)
 
@@ -313,7 +313,6 @@ class AbstractCachedRaster(AbstractRaster):
 
                 # if the deepest is to_produce, updating produced
                 if index == 0 and node_id == self._get_graph_uid(to_produce, "to_produce"):
-                    print("hello")
                     query.produce.verbed.put(node["future"].get())
                     query.produce.to_verb.pop(0)
                     continue
@@ -510,7 +509,7 @@ class AbstractNotCachedRaster(AbstractRaster):
     def _prepare_query(self, query):
         self._to_produce_to_to_compute(query)
 
-    def _produce_data(self, input_fp):
+    def _produce_data(self, input_fp, data):
         raise NotImplementedError('Should be implemented by all subclasses')
 
     def _compute_data(self, data):
