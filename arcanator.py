@@ -241,7 +241,7 @@ class AbstractCachedRaster(AbstractRaster):
                                       data.dtype,
                                       self._num_bands,
                                       driver="GTiff",
-                                      sr=self._primitives[self._primitives.keys()[0]].wkt_origin
+                                      sr=self._primitives[list(self._primitives.keys())[0]].wkt_origin
                                      )
         out_proxy.set_data(data, band=-1)
         out_proxy.close()
@@ -301,12 +301,13 @@ class AbstractCachedRaster(AbstractRaster):
             # iterating through the graph
             for index, to_produce in enumerate(query.produce.to_verb):
                 # beginning at to_produce
-                node = self._get_graph_uid(to_produce, "to_produce")
+                node_id = self._get_graph_uid(to_produce, "to_produce")
+                print(node_id)
                 # going as deep as possible (upstream the edges)
-                while len(self._graph.in_edges(node)) > 0:
-                    node = list(self._graph.in_edges(node))[0][0]
+                while len(self._graph.in_edges(node_id)) > 0:
+                    node_id = list(self._graph.in_edges(node_id))[0][0]
 
-                node = self._graph.nodes[node]
+                node = self._graph.nodes[node_id]
                 if not node["future"].ready():
                     continue
 
@@ -317,17 +318,16 @@ class AbstractCachedRaster(AbstractRaster):
                     continue
 
                 # applying the corresponding function
-                out_edges = self._graph.out_edges(node)
+                out_edges = self._graph.copy().out_edges(node_id, data=True)
                 for out_edge in out_edges:
-                    self._graph.nodes[out_edge[1]]["future"] = out_edge["pool"].apply_async(
-                        out_edge["function"],
+                    self._graph.nodes[out_edge[1]]["future"] = out_edge[2]["pool"].apply_async(
+                        out_edge[2]["function"],
                         (
                             self._graph.nodes[out_edge[1]]["footprint"],
-                            node.future.get()
+                            node["future"].get()
                         )
                     )
-                    self._graph.remove_edge(out_edge)
-
+                    self._graph.remove_edge(out_edge[0], out_edge[1])
                 break
 
             self._clean_graph()
@@ -367,7 +367,7 @@ class AbstractCachedRaster(AbstractRaster):
                             footprint=to_read,
                             future=self._io_pool.apply_async(
                                 self._read_cache_data,
-                                to_read
+                                (to_read,)
                             )
                         )
 
@@ -534,7 +534,7 @@ class ResampledRaster(AbstractCachedRaster):
 
 
 
-    def _compute_data(self, footprint, data):
+    def _compute_data(self, footprint, _data):
         print(self.__class__.__name__, " computing data ", threading.currentThread().getName())
 
         if not hasattr(self._thread_storage, "ds"):
@@ -542,8 +542,9 @@ class ResampledRaster(AbstractCachedRaster):
             self._thread_storage.ds = ds
         else:
             ds = self._thread_storage.ds
-            with ds.open_araster(self._primitives["primitive"].path).close as prim:
-                data = prim.get_data(footprint)
+
+        with ds.open_araster(self._primitives["primitive"].path).close as prim:
+            data = prim.get_data(footprint)
         print(self.__class__.__name__, " computed data ", threading.currentThread().getName())
         return data
 
