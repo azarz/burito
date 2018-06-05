@@ -386,8 +386,8 @@ class AbstractCachedRaster(AbstractRaster):
                 new_query.read.to_verb.append(to_read_tiles)
 
                 for to_read in to_read_tiles:
-                    to_read_uid = self._get_graph_uid(to_read, "to_read" + str(self._to_read_in_occurencies_dict[to_produce]))
-                    self._to_produce_in_occurencies_dict[to_produce] += 1
+                    to_read_uid = self._get_graph_uid(to_read, "to_read" + str(self._to_read_in_occurencies_dict[to_read]))
+                    self._to_read_in_occurencies_dict[to_read] += 1
 
                     # if the tile is written, only reading it
                     if self._is_written(to_read):
