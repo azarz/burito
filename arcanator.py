@@ -320,11 +320,11 @@ class AbstractRaster(object):
         """
         returns a  generator from a fp_iterable
         """
-        queue = self.get_multi_data_queue(fp_iterable, queue_size)
+        out_queue = self.get_multi_data_queue(fp_iterable, queue_size)
         def out_generator():
             for fp in fp_iterable:
                 assert fp.same_grid(self.fp)
-                result = queue.get()
+                result = out_queue.get()
                 assert np.array_equal(fp.shape, result.shape[0:2])
                 yield result
 
@@ -494,9 +494,6 @@ class AbstractCachedRaster(AbstractRaster):
 
     def _to_collect_of_to_compute(self, fp):
         raise NotImplementedError()
-
-
-
 
 
 
@@ -695,8 +692,6 @@ class HeatmapRaster(AbstractCachedRaster):
         tile_count = np.ceil(self._full_fp.rsize / 500)
         self._cache_tiles = self._full_fp.tile_count(*tile_count, boundary_effect='shrink')
 
-        self._lock = threading.Lock()
-
         self._computation_pool = mp.pool.ThreadPool(1)
 
 
@@ -707,14 +702,14 @@ class HeatmapRaster(AbstractCachedRaster):
 
 
     def _compute_data(self, rgba_data, slope_data):
+        print(self.__class__.__name__, " computing data ", threading.currentThread().getName())
         rgb_data = np.where((rgba_data[..., 3] == 255)[..., np.newaxis], rgba_data, 0)[..., 0:3]
         rgb = (rgb_data.astype('float32') - 127.5) / 127.5
 
         slopes = slope_data / 45 - 1
 
-        with self._lock:
-            prediction = self._model.predict([rgb[np.newaxis], slopes[np.newaxis]])[0]
-
+        prediction = self._model.predict([rgb[np.newaxis], slopes[np.newaxis]])[0]
+        print(self.__class__.__name__, " computed data ", threading.currentThread().getName())
         return prediction
 
 
@@ -752,7 +747,7 @@ def main():
 
     slopes = Slopes(resampled_dsm)
 
-    # hmr = HeatmapRaster(model, resampled_rgba, slopes)
+    hmr = HeatmapRaster(model, resampled_rgba, slopes)
 
     big_display_fp = out_fp
     big_dsm_disp_fp = big_display_fp.intersection(big_display_fp, scale=1.28, alignment=(0, 0))
@@ -760,18 +755,26 @@ def main():
     display_tiles = big_display_fp.tile_count(5, 5, boundary_effect='shrink')
     dsm_display_tiles = big_dsm_disp_fp.tile_count(5, 5, boundary_effect='shrink')
 
-    trickylist = list(dsm_display_tiles.flat) + list(dsm_display_tiles.flat)
-
+    rgba_out = resampled_rgba.get_multi_data(list(display_tiles.flat), 5)
+    rgba_out1 = resampled_rgba.get_multi_data(list(display_tiles.flat), 5)
+    # rgba_out2 = resampled_rgba.get_multi_data(list(display_tiles.flat), 5)
+    # rgba_out3 = resampled_rgba.get_multi_data(list(display_tiles.flat), 5)
+    # rgba_out4 = resampled_rgba.get_multi_data(list(display_tiles.flat), 5)
+    # rgba_out5 = resampled_rgba.get_multi_data(list(display_tiles.flat), 5)
+    # dsm_out = resampled_dsm.get_multi_data(dsm_display_tiles, 5)
+    # slopes_out = slopes.get_multi_data(list(dsm_display_tiles.flat), 5)
     # hm_out = hmr.get_multi_data(display_tiles.flat, 5)
-    # rgba_out = resampled_rgba.get_multi_data(list(display_tiles.flat), 5)
-    dsm_out = resampled_dsm.get_multi_data(trickylist, 5)
-    slopes_out = slopes.get_multi_data(list(dsm_display_tiles.flat), 5)
 
     for display_fp, dsm_disp_fp in zip(display_tiles.flat, dsm_display_tiles.flat):
         try:
             # next(dsm_out)
-            next(slopes_out)
-            # next(rgba_out)
+            # next(hm_out)
+            next(rgba_out)
+            next(rgba_out1)
+            # next(rgba_out2)
+            # next(rgba_out3)
+            # next(rgba_out4)
+            # next(rgba_out5)
             # show_many_images(
             #     [next(rgba_out), next(slopes_out)[...,0],np.argmax(next(hm_out), axis=-1)], 
             #     extents=[display_fp.extent, dsm_disp_fp.extent, display_fp.extent]
