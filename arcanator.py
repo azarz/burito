@@ -7,6 +7,7 @@ import threading
 import hashlib
 import sys
 import time
+from collections import defaultdict
 
 from keras.models import load_model
 
@@ -209,6 +210,12 @@ class AbstractCachedRaster(AbstractRaster):
 
         self._graph = nx.DiGraph()
 
+        # Used to keep duploicates in to_produce
+        self._to_produce_in_occurencies_dict = defaultdict(int)
+        self._to_produce_out_occurencies_dict = defaultdict(int)
+
+
+
 
     def _get_cache_tile_path(self, cache_tile):
         """
@@ -302,7 +309,7 @@ class AbstractCachedRaster(AbstractRaster):
             # iterating through the graph
             for index, to_produce in enumerate(query.produce.to_verb):
                 # beginning at to_produce
-                node_id = self._get_graph_uid(to_produce, "to_produce")
+                node_id = self._get_graph_uid(to_produce, "to_produce" + str(self._to_produce_out_occurencies_dict[to_produce]))
                 # going as deep as possible (upstream the edges)
                 while len(self._graph.in_edges(node_id)) > 0:
                     node_id = list(self._graph.in_edges(node_id))[0][0]
@@ -312,9 +319,10 @@ class AbstractCachedRaster(AbstractRaster):
                     continue
 
                 # if the deepest is to_produce, updating produced
-                if index == 0 and node_id == self._get_graph_uid(to_produce, "to_produce"):
+                if index == 0 and node["type"] == "to_produce":
                     query.produce.verbed.put(node["data"])
                     query.produce.to_verb.pop(0)
+                    self._to_produce_out_occurencies_dict[to_produce] += 1
                     self._graph.remove_node(node_id)
                     continue
 
@@ -366,7 +374,8 @@ class AbstractCachedRaster(AbstractRaster):
             new_query.collect.to_verb = {key: [] for key in self._primitives.keys()}
 
             for to_produce in new_query.produce.to_verb:
-                to_produce_uid = self._get_graph_uid(to_produce, "to_produce")
+                to_produce_uid = self._get_graph_uid(to_produce, "to_produce" + str(self._to_produce_in_occurencies_dict[to_produce]))
+                self._to_produce_in_occurencies_dict[to_produce] += 1
                 self._graph.add_node(to_produce_uid, footprint=to_produce, data=np.zeros(to_produce.shape), type="to_produce")
                 to_read_tiles = self._to_read_of_to_produce(to_produce)
                 new_query.read.to_verb.append(to_read_tiles)
@@ -419,6 +428,7 @@ class AbstractCachedRaster(AbstractRaster):
                                 self._graph.add_edge(to_collect_uid, to_compute_uid, pool=self._io_pool)
 
             new_query.collect.verbed = self._collect_data(new_query.collect.to_verb)
+            print()
 
 
     def _collect_data(self, to_collect):
@@ -434,12 +444,18 @@ class AbstractCachedRaster(AbstractRaster):
         return results
 
     def _clean_graph(self):
+        # Used to keep duploicates in to_produce
+        to_produce_occurencies_dict = self._to_produce_out_occurencies_dict.copy()
+
         to_remove = list(nx.isolates(self._graph))
+
         for query in self._queries:
             for to_produce in query.produce.to_verb:
-                to_produce_uid = self._get_graph_uid(to_produce, "to_produce")
+                to_produce_uid = self._get_graph_uid(to_produce, "to_produce" + str(to_produce_occurencies_dict[to_produce]))
+                to_produce_occurencies_dict[to_produce] += 1
                 while to_produce_uid in to_remove:
                     to_remove.remove(to_produce_uid)
+
         self._graph.remove_nodes_from(to_remove)
 
     def _to_read_of_to_produce(self, fp):
@@ -734,20 +750,21 @@ def main():
     display_tiles = big_display_fp.tile_count(5, 5, boundary_effect='shrink')
     dsm_display_tiles = big_dsm_disp_fp.tile_count(5, 5, boundary_effect='shrink')
 
+    trickylist = list(dsm_display_tiles.flat) + list(dsm_display_tiles.flat)
 
     # hm_out = hmr.get_multi_data(display_tiles.flat, 5)
     # rgba_out = resampled_rgba.get_multi_data(display_tiles.flat, 5)
-    dsm_out = resampled_dsm.get_multi_data(dsm_display_tiles.flat, 5)
+    dsm_out = resampled_dsm.get_multi_data(trickylist, 5)
     # slopes_out = slopes.get_multi_data(dsm_display_tiles.flat, 5)
 
     def out_generator(tiles, out_q):
-        for fp in tiles.flat:
+        for fp in tiles:
             result = out_q.get()
             assert np.array_equal(fp.shape, result.shape[0:2])
             yield result
 
     # slopes_out_gen = out_generator(dsm_display_tiles, slopes_out)
-    dsm_out_gen = out_generator(dsm_display_tiles, dsm_out)
+    dsm_out_gen = out_generator(trickylist, dsm_out)
 
     for display_fp, dsm_disp_fp in zip(display_tiles.flat, dsm_display_tiles.flat):
         try:
