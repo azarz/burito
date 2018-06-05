@@ -114,9 +114,11 @@ class AbstractRaster(object):
         self._wkt_origin = None # to implement in subclasses
         self._dtype = None      # to implement in subclasses
 
+        self._graph = nx.DiGraph()
 
-        comp_tile_count = np.ceil(self._full_fp.rsize / 500)
-        self._computation_tiles = self._full_fp.tile_count(*comp_tile_count, boundary_effect='shrink')
+        # Used to keep duplicates in to_produce
+        self._to_produce_in_occurencies_dict = defaultdict(int)
+        self._to_produce_out_occurencies_dict = defaultdict(int)
 
 
     def _pressure_ratio(self, query):
@@ -126,9 +128,6 @@ class AbstractRaster(object):
         num = query.produce.verbed.qsize() + len(query.produce.staging)
         den = query.produce.verbed.maxsize
         return num/den
-
-    def _scheduler(self):
-        raise NotImplementedError('Should be implemented by all subclasses')
 
     def _prepare_query(self, query):
         return
@@ -165,110 +164,8 @@ class AbstractRaster(object):
     def _compute_data(self, compute_fp, data):
         raise NotImplementedError('Should be implemented by all subclasses')
 
-    def get_multi_data_queue(self, fp_iterable, queue_size=5):
-        """
-        returns a queue (could be generator) from a fp_iterable
-        """
-        query = FullQuery(queue_size)
-        to_produce = list(fp_iterable.copy())
-
-        query.produce.to_verb = to_produce
-
-        self._prepare_query(query)
-
-        self._queries.append(query)
-        self._new_queries.append(query)
-
-        return query.produce.verbed
-
-
-    def get_multi_data(self, fp_iterable, queue_size=5):
-        """
-        returns a  generator from a fp_iterable
-        """
-        queue = self.get_multi_data_queue(fp_iterable, queue_size)
-        def out_generator():
-            for fp in fp_iterable:
-                assert fp.same_grid(self.fp)
-                result = queue.get()
-                assert np.array_equal(fp.shape, result.shape[0:2])
-                yield result
-
-        return out_generator()
-
-
-    def get_data(self, fp):
-        return next(self.get_multi_data([fp]))
-
-
-
-
-class AbstractCachedRaster(AbstractRaster):
-    """
-    Cached implementation of abstract raster
-    """
-    def __init__(self, full_fp, rtype):
-        super().__init__(full_fp)
-        self._rtype = rtype
-
-        tile_count = np.ceil(self._full_fp.rsize / 500)
-        self._cache_tiles = self._full_fp.tile_count(*tile_count, boundary_effect='shrink')
-
-        self._graph = nx.DiGraph()
-
-        # Used to keep duploicates in to_produce
-        self._to_produce_in_occurencies_dict = defaultdict(int)
-        self._to_produce_out_occurencies_dict = defaultdict(int)
-
-        # Used to keep duploicates in to_read
-        self._to_read_in_occurencies_dict = defaultdict(int)
-
-
-
-
-    def _get_cache_tile_path(self, cache_tile):
-        """
-        Returns a string, which is a path to a cache tile from its fp
-        """
-        path = str(
-            Path(CACHE_DIR) /
-            DIR_NAMES[frozenset({*self._rtype})] /
-            "{:.2f}_{:.2f}_{:.2f}_{}".format(*cache_tile.tl, cache_tile.pxsizex, cache_tile.rsizex)
-        )
-        return path
-
-
-    def _read_cache_data(self, cache_tile, _placeholder=None):
-        print(self.__class__.__name__, " reading in ", threading.currentThread().getName())
-        ds = buzz.DataSource(allow_interpolation=True)
-        filepath = self._get_cache_tile_path(cache_tile)
-
-        with ds.open_araster(filepath).close as src:
-            data = src.get_data(band=-1, fp=cache_tile)
-        print(self.__class__.__name__, " reading out ", threading.currentThread().getName())
-        return data
-
-
-    def _write_cache_data(self, cache_tile, data):
-        print(self.__class__.__name__, " writing in ", threading.currentThread().getName())
-        filepath = self._get_cache_tile_path(cache_tile)
-        ds = buzz.DataSource(allow_interpolation=True)
-
-        out_proxy = ds.create_araster(filepath,
-                                      cache_tile,
-                                      data.dtype,
-                                      self._num_bands,
-                                      driver="GTiff",
-                                      sr=self._primitives[list(self._primitives.keys())[0]].wkt_origin
-                                     )
-        out_proxy.set_data(data, band=-1)
-        out_proxy.close()
-        print(self.__class__.__name__, " writing out ", threading.currentThread().getName())
-
-
     def _get_graph_uid(self, fp, _type):
         return hash(repr(fp) + _type)
-
 
     def _scheduler(self):
         print(self.__class__.__name__, " scheduler in ", threading.currentThread().getName())
@@ -331,11 +228,14 @@ class AbstractCachedRaster(AbstractRaster):
 
                 # if the deepest is to_produce, updating produced
                 if index == 0 and node["type"] == "to_produce":
-                    query.produce.verbed.put(node["data"])
-                    query.produce.to_verb.pop(0)
-                    self._to_produce_out_occurencies_dict[to_produce] += 1
-                    self._graph.remove_node(node_id)
-                    continue
+                    try:
+                        query.produce.verbed.put(node["data"], timeout=1e-2)
+                        query.produce.to_verb.pop(0)
+                        self._to_produce_out_occurencies_dict[to_produce] += 1
+                        self._graph.remove_node(node_id)
+                        continue
+                    except queue.Full:
+                        continue
 
                 # applying the corresponding function
                 out_edges = self._graph.copy().out_edges(node_id, data=True)
@@ -364,6 +264,136 @@ class AbstractCachedRaster(AbstractRaster):
                 break
 
             self._clean_graph()
+
+
+
+    def _clean_graph(self):
+        # Used to keep duploicates in to_produce
+        to_produce_occurencies_dict = self._to_produce_out_occurencies_dict.copy()
+
+        to_remove = list(nx.isolates(self._graph))
+
+        for query in self._queries:
+            for to_produce in query.produce.to_verb:
+                to_produce_uid = self._get_graph_uid(to_produce, "to_produce" + str(to_produce_occurencies_dict[to_produce]))
+                to_produce_occurencies_dict[to_produce] += 1
+                while to_produce_uid in to_remove:
+                    to_remove.remove(to_produce_uid)
+
+        self._graph.remove_nodes_from(to_remove)
+
+
+
+    def _collect_data(self, to_collect):
+        # in: [
+        #    [to_collect_p1_1, ..., to_collect_p1_n],
+        #    ...,
+        #    [to_collect_pp_1, ..., to_collect_pp_n]
+        #]
+        # out: [queue_1, queue_2, ..., queue_p]
+        results = {}
+        for primitive in self._primitives.keys():
+            results[primitive] = self._primitives[primitive].get_multi_data_queue(to_collect[primitive])
+        return results
+
+
+    def _update_graph_from_queries(self):
+        raise NotImplementedError()
+
+
+    def get_multi_data_queue(self, fp_iterable, queue_size=5):
+        """
+        returns a queue (could be generator) from a fp_iterable
+        """
+        query = FullQuery(queue_size)
+        to_produce = list(fp_iterable.copy())
+
+        query.produce.to_verb = to_produce
+
+        self._queries.append(query)
+        self._new_queries.append(query)
+
+        return query.produce.verbed
+
+
+    def get_multi_data(self, fp_iterable, queue_size=5):
+        """
+        returns a  generator from a fp_iterable
+        """
+        queue = self.get_multi_data_queue(fp_iterable, queue_size)
+        def out_generator():
+            for fp in fp_iterable:
+                assert fp.same_grid(self.fp)
+                result = queue.get()
+                assert np.array_equal(fp.shape, result.shape[0:2])
+                yield result
+
+        return out_generator()
+
+
+    def get_data(self, fp):
+        return next(self.get_multi_data([fp]))
+
+
+
+
+
+class AbstractCachedRaster(AbstractRaster):
+    """
+    Cached implementation of abstract raster
+    """
+    def __init__(self, full_fp, rtype):
+        super().__init__(full_fp)
+        self._rtype = rtype
+    
+        tile_count = np.ceil(self._full_fp.rsize / 500)
+        self._cache_tiles = self._full_fp.tile_count(*tile_count, boundary_effect='shrink')
+        self._computation_tiles = self._full_fp.tile_count(*tile_count, boundary_effect='shrink')
+
+        # Used to keep duplicates in to_read
+        self._to_read_in_occurencies_dict = defaultdict(int)
+
+
+
+
+    def _get_cache_tile_path(self, cache_tile):
+        """
+        Returns a string, which is a path to a cache tile from its fp
+        """
+        path = str(
+            Path(CACHE_DIR) /
+            DIR_NAMES[frozenset({*self._rtype})] /
+            "{:.2f}_{:.2f}_{:.2f}_{}".format(*cache_tile.tl, cache_tile.pxsizex, cache_tile.rsizex)
+        )
+        return path
+
+
+    def _read_cache_data(self, cache_tile, _placeholder=None):
+        print(self.__class__.__name__, " reading in ", threading.currentThread().getName())
+        ds = buzz.DataSource(allow_interpolation=True)
+        filepath = self._get_cache_tile_path(cache_tile)
+
+        with ds.open_araster(filepath).close as src:
+            data = src.get_data(band=-1, fp=cache_tile)
+        print(self.__class__.__name__, " reading out ", threading.currentThread().getName())
+        return data
+
+
+    def _write_cache_data(self, cache_tile, data):
+        print(self.__class__.__name__, " writing in ", threading.currentThread().getName())
+        filepath = self._get_cache_tile_path(cache_tile)
+        ds = buzz.DataSource(allow_interpolation=True)
+
+        out_proxy = ds.create_araster(filepath,
+                                      cache_tile,
+                                      data.dtype,
+                                      self._num_bands,
+                                      driver="GTiff",
+                                      sr=self._primitives[list(self._primitives.keys())[0]].wkt_origin
+                                     )
+        out_proxy.set_data(data, band=-1)
+        out_proxy.close()
+        print(self.__class__.__name__, " writing out ", threading.currentThread().getName())
 
 
     def _update_graph_from_queries(self):
@@ -442,33 +472,6 @@ class AbstractCachedRaster(AbstractRaster):
             new_query.collect.verbed = self._collect_data(new_query.collect.to_verb)
 
 
-    def _collect_data(self, to_collect):
-        # in: [
-        #    [to_collect_p1_1, ..., to_collect_p1_n],
-        #    ...,
-        #    [to_collect_pp_1, ..., to_collect_pp_n]
-        #]
-        # out: [queue_1, queue_2, ..., queue_p]
-        results = {}
-        for primitive in self._primitives.keys():
-            results[primitive] = self._primitives[primitive].get_multi_data_queue(to_collect[primitive])
-        return results
-
-    def _clean_graph(self):
-        # Used to keep duploicates in to_produce
-        to_produce_occurencies_dict = self._to_produce_out_occurencies_dict.copy()
-
-        to_remove = list(nx.isolates(self._graph))
-
-        for query in self._queries:
-            for to_produce in query.produce.to_verb:
-                to_produce_uid = self._get_graph_uid(to_produce, "to_produce" + str(to_produce_occurencies_dict[to_produce]))
-                to_produce_occurencies_dict[to_produce] += 1
-                while to_produce_uid in to_remove:
-                    to_remove.remove(to_produce_uid)
-
-        self._graph.remove_nodes_from(to_remove)
-
     def _to_read_of_to_produce(self, fp):
         to_read_list = []
         for cache_tile in self._cache_tiles.flat:
@@ -505,57 +508,52 @@ class AbstractNotCachedRaster(AbstractRaster):
         super().__init__(full_fp)
 
 
-    def _scheduler(self):
-        print(self.__class__.__name__, " scheduler in ", threading.currentThread().getName())
-        while True:
-            ordered_queries = sorted(self._queries, key=self._pressure_ratio)
+    def _update_graph_from_queries(self):
+        """
+        Updates the dependency graph from the new queries
+        """
 
-            for query in ordered_queries:
-                # print(self.__class__.__name__, "  ", query,  " queues:   ", threading.currentThread().getName())
-                # print("       produced:  ", query.produce.verbed.qsize())
-                # print("       computed:  ", query.compute.verbed.qsize())
-                # print("       collected:  ", query.collect.verbed.qsize())
+        while self._new_queries:
+            new_query = self._new_queries.pop(0)
 
-                while query.compute.to_verb:
-                    to_compute_fp = query.compute.to_verb.pop(0)
-                    query.collect.to_verb.append(to_compute_fp)
-                    query.collect.staging.append(self._io_pool.apply_async(self._collect_data, (to_compute_fp,)))
+            # [
+            #    [to_collect_p1_1, ..., to_collect_p1_n],
+            #    ...,
+            #    [to_collect_pp_1, ..., to_collect_pp_n]
+            # ]
+            # with p # of primitives and n # of to_compute fps
 
-                # If all to_produce was consumed, the query has ended
-                if not query.produce.to_verb:
-                    self._queries.remove(query)
-                    del query
-                    continue
+            # initializing to_collect dictionnary
+            new_query.collect.to_verb = {key: [] for key in self._primitives.keys()}
 
-                if query.collect.staging and query.collect.staging[0].ready():
-                    collected_data = query.collect.staging.pop(0).get()
-                    query.compute.staging.append(self._computation_pool.apply_async(self._compute_data, (collected_data,)))
+            for to_produce in new_query.produce.to_verb:
+                to_produce_uid = self._get_graph_uid(to_produce, "to_produce" + str(self._to_produce_in_occurencies_dict[to_produce]))
+                self._to_produce_in_occurencies_dict[to_produce] += 1
+                self._graph.add_node(to_produce_uid, footprint=to_produce, data=np.zeros(to_produce.shape), type="to_produce")
 
-                if query.compute.staging and query.compute.staging[0].ready() and not query.produce.verbed.full():
-                    query.produce.verbed.put(query.compute.staging.pop(0).get())
-                    del query.produce.to_verb[0]
+                to_compute = to_produce
 
+                to_compute_uid = self._get_graph_uid(to_compute, "to_compute")
 
-            time.sleep(1e-2)
+                self._graph.add_node(to_compute_uid, footprint=to_compute, future=DummyFuture(), type="to_compute")
+                self._graph.add_edge(to_compute_uid, to_produce_uid, pool=self._io_pool, function=self._produce_data)
+                multi_to_collect = self._to_collect_of_to_compute(to_compute)
 
+                for key, to_collect_primitive in zip(self._primitives.keys(), multi_to_collect):
+                    new_query.collect.to_verb[key].append(to_collect_primitive)
 
+                for to_collect in multi_to_collect:
+                    to_collect_uid = self._get_graph_uid(to_collect, "to_collect")
+                    self._graph.add_node(to_collect_uid, footprints=to_collect, future=DummyFuture(), type="to_collect")
+                    self._graph.add_edge(to_collect_uid, to_compute_uid, pool=self._io_pool)
 
-    def _to_produce_to_to_compute(self, query):
-        if not query.produce.to_verb:
-            return
-
-        else:
-            for to_produce in query.produce.to_verb:
-                query.compute.to_verb.append(to_produce)
+            new_query.collect.verbed = self._collect_data(new_query.collect.to_verb)
 
 
-    def _prepare_query(self, query):
-        self._to_produce_to_to_compute(query)
+    def _to_collect_of_to_compute(self, fp):
+        raise NotImplementedError()
 
-    def _produce_data(self, input_fp, data):
-        raise NotImplementedError('Should be implemented by all subclasses')
-
-    def _compute_data(self, data):
+    def _compute_data(self, compute_fp, data):
         raise NotImplementedError('Should be implemented by all subclasses')
 
 
@@ -597,8 +595,11 @@ class ResampledRaster(AbstractCachedRaster):
         return data
 
     def _collect_data(self, to_collect):
+        """
+        mocks the behaviour of a primitive so the general function works
+        """
         result = queue.Queue()
-        for p in to_collect["primitive"]:
+        for _ in to_collect["primitive"]:
             result.put([])
         return {"primitive": result}
 
@@ -636,7 +637,7 @@ class Slopes(AbstractNotCachedRaster):
         self._dtype = "float32"
 
 
-    def _compute_data(self, data):
+    def _compute_data(self, _compute_fp, data):
         print(self.__class__.__name__, " computing data ", threading.currentThread().getName())
         arr = data
         nodata_mask = arr == self._nodata
@@ -662,10 +663,8 @@ class Slopes(AbstractNotCachedRaster):
         return arr
 
 
-    def _collect_data(self, input_fp):
-        data = self._primitives["dsm"].get_data(input_fp.dilate(1))
-        return data
-
+    def _to_collect_of_to_compute(self, fp):
+        return [fp.dilate(1)]
 
 
 
@@ -770,7 +769,7 @@ def main():
 
     for display_fp, dsm_disp_fp in zip(display_tiles.flat, dsm_display_tiles.flat):
         try:
-            next(dsm_out)
+            # next(dsm_out)
             next(slopes_out)
             # next(rgba_out)
             # show_many_images(
