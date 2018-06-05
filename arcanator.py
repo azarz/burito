@@ -214,6 +214,9 @@ class AbstractCachedRaster(AbstractRaster):
         self._to_produce_in_occurencies_dict = defaultdict(int)
         self._to_produce_out_occurencies_dict = defaultdict(int)
 
+        # Used to keep duploicates in to_read
+        self._to_read_in_occurencies_dict = defaultdict(int)
+
 
 
 
@@ -230,11 +233,13 @@ class AbstractCachedRaster(AbstractRaster):
 
 
     def _read_cache_data(self, cache_tile, _placeholder=None):
+        print(self.__class__.__name__, " reading in ", threading.currentThread().getName())
         ds = buzz.DataSource(allow_interpolation=True)
         filepath = self._get_cache_tile_path(cache_tile)
 
         with ds.open_araster(filepath).close as src:
             data = src.get_data(band=-1, fp=cache_tile)
+        print(self.__class__.__name__, " reading out ", threading.currentThread().getName())
         return data
 
 
@@ -381,7 +386,8 @@ class AbstractCachedRaster(AbstractRaster):
                 new_query.read.to_verb.append(to_read_tiles)
 
                 for to_read in to_read_tiles:
-                    to_read_uid = self._get_graph_uid(to_read, "to_read")
+                    to_read_uid = self._get_graph_uid(to_read, "to_read" + str(self._to_read_in_occurencies_dict[to_produce]))
+                    self._to_produce_in_occurencies_dict[to_produce] += 1
 
                     # if the tile is written, only reading it
                     if self._is_written(to_read):
@@ -428,7 +434,6 @@ class AbstractCachedRaster(AbstractRaster):
                                 self._graph.add_edge(to_collect_uid, to_compute_uid, pool=self._io_pool)
 
             new_query.collect.verbed = self._collect_data(new_query.collect.to_verb)
-            print()
 
 
     def _collect_data(self, to_collect):
@@ -753,9 +758,9 @@ def main():
     trickylist = list(dsm_display_tiles.flat) + list(dsm_display_tiles.flat)
 
     # hm_out = hmr.get_multi_data(display_tiles.flat, 5)
-    # rgba_out = resampled_rgba.get_multi_data(display_tiles.flat, 5)
-    dsm_out = resampled_dsm.get_multi_data(trickylist, 5)
-    # slopes_out = slopes.get_multi_data(dsm_display_tiles.flat, 5)
+    rgba_out = resampled_rgba.get_multi_data(list(display_tiles.flat), 5)
+    # dsm_out = resampled_dsm.get_multi_data(trickylist, 5)
+    # slopes_out = slopes.get_multi_data(list(dsm_display_tiles.flat), 5)
 
     def out_generator(tiles, out_q):
         for fp in tiles:
@@ -763,13 +768,15 @@ def main():
             assert np.array_equal(fp.shape, result.shape[0:2])
             yield result
 
-    # slopes_out_gen = out_generator(dsm_display_tiles, slopes_out)
-    dsm_out_gen = out_generator(trickylist, dsm_out)
+    rgba_out_gen = out_generator(list(display_tiles.flat), rgba_out)
+    # slopes_out_gen = out_generator(list(dsm_display_tiles.flat), slopes_out)
+    # dsm_out_gen = out_generator(trickylist, dsm_out)
 
     for display_fp, dsm_disp_fp in zip(display_tiles.flat, dsm_display_tiles.flat):
         try:
-            next(dsm_out_gen)
-            # next(slopes_out)
+            # next(dsm_out_gen)
+            # next(slopes_out_gen)
+            next(rgba_out_gen)
             # show_many_images(
             #     [next(rgba_out), next(slopes_out)[...,0],np.argmax(next(hm_out), axis=-1)], 
             #     extents=[display_fp.extent, dsm_disp_fp.extent, display_fp.extent]
