@@ -165,7 +165,7 @@ class AbstractRaster(object):
     def _compute_data(self, compute_fp, data):
         raise NotImplementedError('Should be implemented by all subclasses')
 
-    def get_multi_data(self, fp_iterable, queue_size=5):
+    def get_multi_data_queue(self, fp_iterable, queue_size=5):
         """
         returns a queue (could be generator) from a fp_iterable
         """
@@ -179,20 +179,26 @@ class AbstractRaster(object):
         self._queries.append(query)
         self._new_queries.append(query)
 
-        # def out_generator():
-        #     for fp in fp_iterable:
-        #         assert fp.same_grid(self.fp)
-        #         result = query.produce.verbed.get()
-        #         assert np.array_equal(fp.shape, result.shape[0:2])
-        #         yield result
-
-        # return out_generator()
         return query.produce.verbed
 
 
+    def get_multi_data(self, fp_iterable, queue_size=5):
+        """
+        returns a  generator from a fp_iterable
+        """
+        queue = self.get_multi_data_queue(fp_iterable, queue_size)
+        def out_generator():
+            for fp in fp_iterable:
+                assert fp.same_grid(self.fp)
+                result = queue.get()
+                assert np.array_equal(fp.shape, result.shape[0:2])
+                yield result
+
+        return out_generator()
+
+
     def get_data(self, fp):
-        # return next(self.get_multi_data([fp]))
-        return self.get_multi_data([fp]).get()
+        return next(self.get_multi_data([fp]))
 
 
 
@@ -442,10 +448,10 @@ class AbstractCachedRaster(AbstractRaster):
         #    ...,
         #    [to_collect_pp_1, ..., to_collect_pp_n]
         #]
-        # out: [queue_1, queue_2, ..., queue_p] CHANGE HERE
+        # out: [queue_1, queue_2, ..., queue_p]
         results = {}
         for primitive in self._primitives.keys():
-            results[primitive] = self._primitives[primitive].get_multi_data(to_collect[primitive])
+            results[primitive] = self._primitives[primitive].get_multi_data_queue(to_collect[primitive])
         return results
 
     def _clean_graph(self):
@@ -758,25 +764,15 @@ def main():
     trickylist = list(dsm_display_tiles.flat) + list(dsm_display_tiles.flat)
 
     # hm_out = hmr.get_multi_data(display_tiles.flat, 5)
-    rgba_out = resampled_rgba.get_multi_data(list(display_tiles.flat), 5)
-    # dsm_out = resampled_dsm.get_multi_data(trickylist, 5)
-    # slopes_out = slopes.get_multi_data(list(dsm_display_tiles.flat), 5)
-
-    def out_generator(tiles, out_q):
-        for fp in tiles:
-            result = out_q.get()
-            assert np.array_equal(fp.shape, result.shape[0:2])
-            yield result
-
-    rgba_out_gen = out_generator(list(display_tiles.flat), rgba_out)
-    # slopes_out_gen = out_generator(list(dsm_display_tiles.flat), slopes_out)
-    # dsm_out_gen = out_generator(trickylist, dsm_out)
+    # rgba_out = resampled_rgba.get_multi_data(list(display_tiles.flat), 5)
+    dsm_out = resampled_dsm.get_multi_data(trickylist, 5)
+    slopes_out = slopes.get_multi_data(list(dsm_display_tiles.flat), 5)
 
     for display_fp, dsm_disp_fp in zip(display_tiles.flat, dsm_display_tiles.flat):
         try:
-            # next(dsm_out_gen)
-            # next(slopes_out_gen)
-            next(rgba_out_gen)
+            next(dsm_out)
+            next(slopes_out)
+            # next(rgba_out)
             # show_many_images(
             #     [next(rgba_out), next(slopes_out)[...,0],np.argmax(next(hm_out), axis=-1)], 
             #     extents=[display_fp.extent, dsm_disp_fp.extent, display_fp.extent]
