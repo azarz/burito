@@ -204,7 +204,9 @@ class AbstractRaster(object):
                         )
                         self._graph.remove_edge(*edge)
 
-                    query.collect.to_verb[prim].pop(0)
+                    to_pop = query.collect.to_verb[prim].pop(0)
+                    while to_pop in query.collect.to_verb[prim]:
+                        query.collect.to_verb[prim].remove(to_pop)
                 continue
 
             # iterating through the graph
@@ -649,8 +651,9 @@ class ResampledRaster(AbstractCachedRaster):
             ds = self._thread_storage.ds
 
         with ds.open_araster(self._primitives["primitive"].path).close as prim:
-            data = prim.get_data(compute_fp)
+            data = prim.get_data(compute_fp, band=-1)
         print(self.__class__.__name__, " computed data ", threading.currentThread().getName())
+        print(data.shape)
         return data
 
     def _collect_data(self, to_collect):
@@ -757,9 +760,9 @@ class HeatmapRaster(AbstractCachedRaster):
         self._computation_pool = mp.pool.ThreadPool(1)
 
 
-    def _to_collect_of_to_compute(self, unique_fp):
-        rgba_tile = output_fp_to_input_fp(unique_fp, 0.64, self._model.get_layer("rgb").input_shape[1])
-        dsm_tile = output_fp_to_input_fp(unique_fp, 1.28, self._model.get_layer("slopes").input_shape[1])
+    def _to_collect_of_to_compute(self, fp):
+        rgba_tile = output_fp_to_input_fp(fp, 0.64, self._model.get_layer("rgb").input_shape[1])
+        dsm_tile = output_fp_to_input_fp(fp, 1.28, self._model.get_layer("slopes").input_shape[1])
         return [rgba_tile, dsm_tile]
 
 
@@ -817,23 +820,23 @@ def main():
     display_tiles = big_display_fp.tile_count(5, 5, boundary_effect='shrink')
     dsm_display_tiles = big_dsm_disp_fp.tile_count(5, 5, boundary_effect='shrink')
 
-    rgba_out = resampled_rgba.get_multi_data(list(display_tiles.flat), 5)
-    rgba_out1 = resampled_rgba.get_multi_data(list(display_tiles.flat), 1)
+    # rgba_out = resampled_rgba.get_multi_data(list(display_tiles.flat), 5)
+    # rgba_out1 = resampled_rgba.get_multi_data(list(display_tiles.flat), 1)
     # rgba_out2 = resampled_rgba.get_multi_data(list(display_tiles.flat), 5)
     # rgba_out3 = resampled_rgba.get_multi_data(list(display_tiles.flat), 5)
     # rgba_out4 = resampled_rgba.get_multi_data(list(display_tiles.flat), 5)
     # rgba_out5 = resampled_rgba.get_multi_data(list(display_tiles.flat), 5)
     # dsm_out = resampled_dsm.get_multi_data(dsm_display_tiles.flat, 1)
     # slopes_out = slopes.get_multi_data(list(dsm_display_tiles.flat), 5)
-    # hm_out = hmr.get_multi_data(display_tiles.flat, 5)
+    hm_out = hmr.get_multi_data(display_tiles.flat, 5)
 
     for display_fp, dsm_disp_fp in zip(display_tiles.flat, dsm_display_tiles.flat):
         try:
             # next(dsm_out)
             # next(slopes_out)
-            # next(hm_out)
-            next(rgba_out)
-            next(rgba_out1)
+            next(hm_out)
+            # next(rgba_out)
+            # next(rgba_out1)
             # next(rgba_out2)
             # next(rgba_out3)
             # next(rgba_out4)
