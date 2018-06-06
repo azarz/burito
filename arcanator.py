@@ -167,6 +167,10 @@ class AbstractRaster(object):
             # getting the emptiest query
             query = ordered_queries[0]
 
+            if not query.produce.to_verb:
+                self._queries.remove(query)
+                continue
+
             # if the emptiest query is full, wainting
             if query.produce.verbed.full():
                 continue
