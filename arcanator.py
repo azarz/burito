@@ -11,10 +11,8 @@ from keras.models import load_model
 
 import scipy.ndimage as ndi
 import numpy as np
-import shapely.geometry as sg
 import networkx as nx
 import buzzard as buzz
-import matplotlib.pyplot as plt
 
 from show_many_images import show_many_images
 from uids_of_paths import uids_of_paths
@@ -49,14 +47,6 @@ DIR_NAMES = {
 }
 
 CACHE_DIR = "./.cache"
-
-STEP_NAME_INDEX = {
-    0: "to_produce",
-    1: "to_read",
-    2: "to_write",
-    3: "to_compute",
-    4: "to_collect"
-}
 
 
 def output_fp_to_input_fp(fp, scale, rsize):
@@ -384,12 +374,12 @@ class AbstractCachedRaster(AbstractRaster):
     """
     Cached implementation of abstract raster
     """
-    def __init__(self, full_fp, rtype):
+    def __init__(self, full_fp, cache_dir, cache_fps):
         super().__init__(full_fp)
-        self._rtype = rtype
+        self._cache_dir = cache_dir
 
         tile_count = np.ceil(self._full_fp.rsize / 500)
-        self._cache_tiles = self._full_fp.tile_count(*tile_count, boundary_effect='shrink')
+        self._cache_tiles = cache_fps
         self._computation_tiles = self._full_fp.tile_count(*tile_count, boundary_effect='shrink')
 
         # Used to keep duplicates in to_read
@@ -403,8 +393,7 @@ class AbstractCachedRaster(AbstractRaster):
         Returns a string, which is a path to a cache tile from its fp
         """
         path = str(
-            Path(CACHE_DIR) /
-            DIR_NAMES[frozenset({*self._rtype})] /
+            Path(self._cache_dir) /
             "{:.2f}_{:.2f}_{:.2f}_{}".format(*cache_tile.tl, cache_tile.pxsizex, cache_tile.rsizex)
         )
         return path
@@ -610,8 +599,7 @@ class AbstractNotCachedRaster(AbstractRaster):
                     futures=[],
                     footprint=to_produce,
                     data=np.zeros(tuple(to_produce.shape) + (self._num_bands,)),
-                    type="to_produce",
-                    pool=self._produce_pool
+                    type="to_produce"
                 )
 
                 to_compute = to_produce
@@ -663,14 +651,13 @@ class ResampledRaster(AbstractCachedRaster):
     resampled raster from buzzard raster
     """
 
-    def __init__(self, raster, scale, rtype):
+    def __init__(self, raster, scale, cache_dir, cache_fps):
 
         full_fp = raster.fp.intersection(raster.fp, scale=scale, alignment=(0, 0))
 
-        super().__init__(full_fp, rtype)
+        super().__init__(full_fp, cache_dir, cache_fps)
 
-        tile_count = np.ceil(self._full_fp.rsize / 500)
-        self._cache_tiles = self._full_fp.tile_count(*tile_count, boundary_effect='shrink')
+        self._cache_tiles = cache_fps
         self._num_bands = len(raster)
         self._nodata = raster.nodata
         self._wkt_origin = raster.wkt_origin
@@ -711,28 +698,6 @@ class ResampledRaster(AbstractCachedRaster):
 
 
 
-
-class ResampledOrthoimage(ResampledRaster):
-    """
-    resampled orthoimage
-    """
-    def __init__(self, raster, scale):
-        super().__init__(raster, scale, ("ortho",))
-
-
-
-
-class ResampledDSM(ResampledRaster):
-    """
-    resampled dsm
-    """
-    def __init__(self, raster, scale):
-        super().__init__(raster, scale, ("dsm",))
-        self._dtype = "float32"
-
-
-
-
 class Slopes(AbstractNotCachedRaster):
     """
     slopes from a raster (abstract raster)
@@ -747,8 +712,8 @@ class Slopes(AbstractNotCachedRaster):
 
     def _compute_data(self, compute_fp, *data):
         print(self.__class__.__name__, " computing data ", threading.currentThread().getName())
-        assert compute_fp.shape == data.shape
         arr, = data
+        assert arr.shape == tuple(compute_fp.dilate(1).shape)
         nodata_mask = arr == self._nodata
         nodata_mask = ndi.binary_dilation(nodata_mask)
         kernel = [
@@ -783,14 +748,14 @@ class HeatmapRaster(AbstractCachedRaster):
     heatmap raster with primitives: ortho + slopes
     """
 
-    def __init__(self, model, resampled_rgba, slopes):
+    def __init__(self, model, resampled_rgba, slopes, cache_dir, cache_fps):
 
         max_scale = max(resampled_rgba.fp.scale[0], slopes.fp.scale[0])
         min_scale = min(resampled_rgba.fp.scale[0], slopes.fp.scale[0])
 
         full_fp = resampled_rgba.fp.intersection(slopes.fp, scale=max_scale, alignment=(0, 0))
 
-        super().__init__(full_fp, ("dsm", "ortho"))
+        super().__init__(full_fp, cache_dir, cache_fps)
         self._computation_pool = mp.pool.ThreadPool(5)
 
         self._dtype = "float32"
@@ -825,9 +790,50 @@ class HeatmapRaster(AbstractCachedRaster):
         slopes = slope_data / 45 - 1
 
         prediction = self._model.predict([rgb[np.newaxis], slopes[np.newaxis]])[0]
-        assert prediction.shape == compute_fp.shape
+        assert prediction.shape[0:2] == tuple(compute_fp.shape)
         print("<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<", self.__class__.__name__, " computed data ", threading.currentThread().getName())
         return prediction
+
+
+
+
+class Raster(AbstractCachedRaster, AbstractNotCachedRaster):
+    """
+    Class that should be used
+    """
+    def __init__(self,
+                 footprint,
+                 dtype,
+                 nbands,
+                 nodata,
+                 srs,
+                 computation_function,
+                 cached,
+                 cache_dir,
+                 cache_fps,
+                 io_pool,
+                 computation_pool,
+                 primitives,
+                 to_collect_of_to_compute,
+                 to_compute_fps):
+        if cached:
+            AbstractCachedRaster.__init__(footprint, "change_that_parameter_plz")
+        else:
+            AbstractNotCachedRaster.__init__(footprint)
+
+        self._compute_data = computation_function
+        self._dtype = dtype
+        self._num_bands = nbands
+        self._nodata = nodata
+        self._wkt_origin = srs
+        self._io_pool = io_pool
+        self._computation_pool = computation_pool
+        self.primitives = primitives
+        self._to_collect_of_to_compute = to_collect_of_to_compute
+        self._computation_tiles = to_compute_fps
+
+
+
 
 
 
@@ -839,6 +845,10 @@ def main():
     rgb_path = "./ortho_8.00cm.tif"
     dsm_path = "./dsm_8.00cm.tif"
     model_path = "./18-01-25-15-38-19_1078_1.00000000_0.07799472_aracena.hdf5"
+
+    # Path(CACHE_DIR) / DIR_NAMES[frozenset({"ortho"})]
+    # Path(CACHE_DIR) / DIR_NAMES[frozenset({"dsm"})]
+    # Path(CACHE_DIR) / DIR_NAMES[frozenset({"ortho", "dsm"})]
 
     for path in DIR_NAMES.values():
         os.makedirs(str(Path(CACHE_DIR) / path), exist_ok=True)
@@ -854,18 +864,23 @@ def main():
     with datasrc.open_araster(rgb_path).close as raster:
         out_fp = raster.fp.intersection(raster.fp, scale=1.28, alignment=(0, 0))
 
+    tile_count128 = np.ceil(out_fp.rsize / 500)
+    cache_tiles128 = out_fp.tile_count(*tile_count128, boundary_effect='shrink')
+
     out_fp = out_fp.intersection(out_fp, scale=0.64)
 
+    tile_count64 = np.ceil(out_fp.rsize / 500)
+    cache_tiles64 = out_fp.tile_count(*tile_count64, boundary_effect='shrink')
 
     initial_rgba = datasrc.open_araster(rgb_path)
     initial_dsm = datasrc.open_araster(dsm_path)
 
-    resampled_rgba = ResampledOrthoimage(initial_rgba, 0.64)
-    resampled_dsm = ResampledDSM(initial_dsm, 1.28)
+    resampled_rgba = ResampledRaster(initial_rgba, 0.64, str(Path(CACHE_DIR) / DIR_NAMES[frozenset({"ortho"})]), cache_tiles64)
+    resampled_dsm = ResampledRaster(initial_dsm, 1.28, str(Path(CACHE_DIR) / DIR_NAMES[frozenset({"dsm"})]), cache_tiles128)
 
     slopes = Slopes(resampled_dsm)
 
-    hmr = HeatmapRaster(model, resampled_rgba, slopes)
+    hmr = HeatmapRaster(model, resampled_rgba, slopes, str(Path(CACHE_DIR) / DIR_NAMES[frozenset({"ortho", "dsm"})]), cache_tiles64)
 
     big_display_fp = out_fp
     big_dsm_disp_fp = big_display_fp.intersection(big_display_fp, scale=1.28, alignment=(0, 0))
