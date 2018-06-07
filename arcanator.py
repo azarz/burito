@@ -4,8 +4,6 @@ import multiprocessing.pool
 import os
 import queue
 import threading
-import hashlib
-import sys
 import time
 from collections import defaultdict
 
@@ -88,7 +86,7 @@ class AbstractRaster(object):
 
         self._computation_pool = mp.pool.ThreadPool()
         self._io_pool = mp.pool.ThreadPool()
-        self._produce_pool = mp.pool.ThreadPool()
+        self._merge_pool = mp.pool.ThreadPool()
 
         self._thread_storage = threading.local()
 
@@ -114,27 +112,39 @@ class AbstractRaster(object):
         den = query.produce.verbed.maxsize
         return num/den
 
-    def _prepare_query(self, query):
-        return
-
     @property
     def fp(self):
+        """
+        returns the raster footprint
+        """
         return self._full_fp
 
     @property
     def nodata(self):
+        """
+        returns the raster nodata
+        """
         return self._nodata
 
     @property
     def wkt_origin(self):
+        """
+        returns the raster wkt origin
+        """
         return self._wkt_origin
 
     @property
     def dtype(self):
+        """
+        returns the raster dtype
+        """
         return self._dtype
 
     @property
     def pxsizex(self):
+        """
+        returns the raster 1D pixel size
+        """
         return self._full_fp.pxsizex
 
 
@@ -148,7 +158,7 @@ class AbstractRaster(object):
             to_fill_data = to_fill_data.squeeze(axis=-1)
         to_fill_data[to_burn_fp.slice_in(big_fp, clip=True)] = to_burn_data[big_fp.slice_in(to_burn_fp, clip=True)]
 
-    def _compute_data(self, compute_fp, data):
+    def _compute_data(self, compute_fp, *data):
         raise NotImplementedError('Should be implemented by all subclasses')
 
     def _get_graph_uid(self, fp, _type):
@@ -274,7 +284,7 @@ class AbstractRaster(object):
 
                     for out_edge in out_edges:
                         if self._graph.nodes[out_edge[1]]["type"] in ("to_produce", "to_write"):
-                            self._graph.nodes[out_edge[1]]["futures"].append(self._graph.nodes[out_edge[1]]["pool"].apply_async(
+                            self._graph.nodes[out_edge[1]]["futures"].append(self._merge_pool.apply_async(
                                 self._burn_data,
                                 (
                                     self._graph.nodes[out_edge[1]]["footprint"],
@@ -348,6 +358,9 @@ class AbstractRaster(object):
         """
         out_queue = self.get_multi_data_queue(fp_iterable, queue_size)
         def out_generator():
+            """
+            output generator from the queue. next() waits the .get() to end
+            """
             for fp in fp_iterable:
                 assert fp.same_grid(self.fp)
                 result = out_queue.get()
@@ -358,6 +371,9 @@ class AbstractRaster(object):
 
 
     def get_data(self, fp):
+        """
+        returns a np array
+        """
         return next(self.get_multi_data([fp]))
 
 
@@ -458,7 +474,6 @@ class AbstractCachedRaster(AbstractRaster):
                     futures=[],
                     data=np.zeros(tuple(to_produce.shape) + (self._num_bands,)),
                     type="to_produce",
-                    pool=self._produce_pool,
                     in_data=None
                 )
                 to_read_tiles = self._to_read_of_to_produce(to_produce)
@@ -565,9 +580,9 @@ class AbstractCachedRaster(AbstractRaster):
 
 
 class AbstractNotCachedRaster(AbstractRaster):
-    def __init__(self, full_fp):
-        super().__init__(full_fp)
-
+    """
+    implementation of abstract raster without cache
+    """
 
     def _update_graph_from_queries(self):
         """
@@ -635,7 +650,7 @@ class AbstractNotCachedRaster(AbstractRaster):
     def _to_collect_of_to_compute(self, fp):
         raise NotImplementedError()
 
-    def _compute_data(self, compute_fp, data):
+    def _compute_data(self, compute_fp, *data):
         raise NotImplementedError('Should be implemented by all subclasses')
 
 
@@ -644,6 +659,9 @@ class AbstractNotCachedRaster(AbstractRaster):
 
 
 class ResampledRaster(AbstractCachedRaster):
+    """
+    resampled raster from buzzard raster
+    """
 
     def __init__(self, raster, scale, rtype):
 
@@ -662,7 +680,7 @@ class ResampledRaster(AbstractCachedRaster):
 
 
 
-    def _compute_data(self, compute_fp, data):
+    def _compute_data(self, compute_fp, *data):
         print(self.__class__.__name__, " computing data ", threading.currentThread().getName())
 
         if not hasattr(self._thread_storage, "ds"):
@@ -672,10 +690,10 @@ class ResampledRaster(AbstractCachedRaster):
             ds = self._thread_storage.ds
 
         with ds.open_araster(self._primitives["primitive"].path).close as prim:
-            data = prim.get_data(compute_fp, band=-1)
+            got_data = prim.get_data(compute_fp, band=-1)
 
         print(self.__class__.__name__, " computed data ", threading.currentThread().getName())
-        return data
+        return got_data
 
     def _collect_data(self, to_collect):
         """
@@ -695,7 +713,9 @@ class ResampledRaster(AbstractCachedRaster):
 
 
 class ResampledOrthoimage(ResampledRaster):
-
+    """
+    resampled orthoimage
+    """
     def __init__(self, raster, scale):
         super().__init__(raster, scale, ("ortho",))
 
@@ -703,7 +723,9 @@ class ResampledOrthoimage(ResampledRaster):
 
 
 class ResampledDSM(ResampledRaster):
-
+    """
+    resampled dsm
+    """
     def __init__(self, raster, scale):
         super().__init__(raster, scale, ("dsm",))
         self._dtype = "float32"
@@ -712,6 +734,9 @@ class ResampledDSM(ResampledRaster):
 
 
 class Slopes(AbstractNotCachedRaster):
+    """
+    slopes from a raster (abstract raster)
+    """
     def __init__(self, dsm):
         super().__init__(dsm.fp)
         self._primitives = {"dsm": dsm}
@@ -720,9 +745,10 @@ class Slopes(AbstractNotCachedRaster):
         self._dtype = "float32"
 
 
-    def _compute_data(self, _compute_fp, data):
+    def _compute_data(self, compute_fp, *data):
         print(self.__class__.__name__, " computing data ", threading.currentThread().getName())
-        arr = data
+        assert compute_fp.shape == data.shape
+        arr, = data
         nodata_mask = arr == self._nodata
         nodata_mask = ndi.binary_dilation(nodata_mask)
         kernel = [
@@ -753,6 +779,9 @@ class Slopes(AbstractNotCachedRaster):
 
 
 class HeatmapRaster(AbstractCachedRaster):
+    """
+    heatmap raster with primitives: ortho + slopes
+    """
 
     def __init__(self, model, resampled_rgba, slopes):
 
@@ -787,14 +816,16 @@ class HeatmapRaster(AbstractCachedRaster):
         return [rgba_tile, dsm_tile]
 
 
-    def _compute_data(self, _compute_fp, rgba_data, slope_data):
+    def _compute_data(self, compute_fp, *data):
         print(">>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>", self.__class__.__name__, " computing data ", threading.currentThread().getName())
+        rgba_data, slope_data = data
         rgb_data = np.where((rgba_data[..., 3] == 255)[..., np.newaxis], rgba_data, 0)[..., 0:3]
         rgb = (rgb_data.astype('float32') - 127.5) / 127.5
 
         slopes = slope_data / 45 - 1
 
         prediction = self._model.predict([rgb[np.newaxis], slopes[np.newaxis]])[0]
+        assert prediction.shape == compute_fp.shape
         print("<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<", self.__class__.__name__, " computed data ", threading.currentThread().getName())
         return prediction
 
@@ -802,11 +833,12 @@ class HeatmapRaster(AbstractCachedRaster):
 
 
 def main():
+    """
+    main program, used for tests
+    """
     rgb_path = "./ortho_8.00cm.tif"
     dsm_path = "./dsm_8.00cm.tif"
     model_path = "./18-01-25-15-38-19_1078_1.00000000_0.07799472_aracena.hdf5"
-
-    CACHE_DIR = "./.cache"
 
     for path in DIR_NAMES.values():
         os.makedirs(str(Path(CACHE_DIR) / path), exist_ok=True)
@@ -849,7 +881,7 @@ def main():
     for display_fp, dsm_disp_fp in zip(display_tiles.flat, dsm_display_tiles.flat):
         try:
             show_many_images(
-                [next(rgba_out), next(slopes_out)[...,0], np.argmax(next(hm_out), axis=-1)], 
+                [next(rgba_out), next(slopes_out)[..., 0], np.argmax(next(hm_out), axis=-1)],
                 extents=[display_fp.extent, dsm_disp_fp.extent, display_fp.extent]
             )
         except StopIteration:
