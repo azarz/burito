@@ -143,8 +143,8 @@ class AbstractRaster(object):
         return int(self._num_bands)
 
 
-    def _produce_data(self, produce_fp, to_burn_data, cache_fp, produced_data):
-        produced_data[cache_fp.slice_in(produce_fp, clip=True)] = to_burn_data[produce_fp.slice_in(cache_fp, clip=True)]
+    def _burn_data(self, big_fp, to_fill_data, to_burn_fp, to_burn_data):
+        to_fill_data[to_burn_fp.slice_in(big_fp, clip=True)] = to_burn_data[big_fp.slice_in(to_burn_fp, clip=True)]
 
     def _compute_data(self, compute_fp, data):
         raise NotImplementedError('Should be implemented by all subclasses')
@@ -204,7 +204,7 @@ class AbstractRaster(object):
                         )
                         self._graph.remove_edge(*edge)
 
-                    to_pop = query.collect.to_verb[prim].pop(0)
+                    query.collect.to_verb[prim].pop(0)
                 continue
 
             # iterating through the graph
@@ -226,8 +226,8 @@ class AbstractRaster(object):
                     if not not_ready_list:
                         try:
                             if len(node["data"].shape) == 3 and node["data"].shape[2] == 1:
-                                node["data"] = node["data"].squeeze()
-                            query.produce.verbed.put(node["data"], timeout=1e-2)
+                                node["data"] = node["data"].squeeze(axis=-1)
+                            query.produce.verbed.put(node["data"].astype(self._dtype), timeout=1e-2)
                             query.produce.to_verb.pop(0)
                             self._to_produce_out_occurencies_dict[to_produce] += 1
                             self._graph.remove_node(node_id)
@@ -240,17 +240,17 @@ class AbstractRaster(object):
 
                 # if the deepest is to_write, writing the data
                 if node["type"] == "to_write" and node["future"] is None:
+
                     not_ready_list = [future for future in node["futures"] if not future.ready()]
                     if not not_ready_list:
-
                         if len(node["data"].shape) == 3 and node["data"].shape[2] == 1:
-                            node["data"] = node["data"].squeeze()
+                            node["data"] = node["data"].squeeze(axis=-1)
 
                         node["future"] = node["pool"].apply_async(
-                            self._write_cache_data,
+                            node["function"],
                             (
                                 node["footprint"],
-                                node["data"]
+                                node["data"].astype(self._dtype)
                             )
                         )
                     continue
@@ -273,12 +273,12 @@ class AbstractRaster(object):
                     for out_edge in out_edges:
                         if self._graph.nodes[out_edge[1]]["type"] in ("to_produce", "to_write"):
                             self._graph.nodes[out_edge[1]]["futures"].append(self._graph.nodes[out_edge[1]]["pool"].apply_async(
-                                self._graph.nodes[out_edge[1]]["function"],
+                                self._burn_data,
                                 (
                                     self._graph.nodes[out_edge[1]]["footprint"],
-                                    in_data,
-                                    self._graph.nodes[out_edge[0]]["footprint"],
-                                    self._graph.nodes[out_edge[1]]["data"]
+                                    self._graph.nodes[out_edge[1]]["data"],
+                                    node["footprint"],
+                                    in_data
                                 )
                             ))
                         else:
@@ -411,7 +411,6 @@ class AbstractCachedRaster(AbstractRaster):
     def _write_cache_data(self, cache_tile, data):
         print(self.__class__.__name__, " writing in ", threading.currentThread().getName())
         filepath = self._get_cache_tile_path(cache_tile)
-
         if not hasattr(self._thread_storage, "ds"):
             ds = buzz.DataSource(allow_interpolation=True)
             self._thread_storage.ds = ds
@@ -458,7 +457,6 @@ class AbstractCachedRaster(AbstractRaster):
                     data=np.zeros(tuple(to_produce.shape) + (self._num_bands,)),
                     type="to_produce",
                     pool=self._produce_pool,
-                    function=self._produce_data,
                     in_data=None
                 )
                 to_read_tiles = self._to_read_of_to_produce(to_produce)
@@ -497,7 +495,7 @@ class AbstractCachedRaster(AbstractRaster):
                                 data=np.zeros(tuple(to_write.shape) + (self._num_bands,)),
                                 type="to_write",
                                 pool=self._io_pool,
-                                function=self._produce_data,
+                                function=self._write_cache_data,
                                 in_data=None
                             )
                             self._graph.add_edge(to_write_uid, to_read_uid)
@@ -596,8 +594,7 @@ class AbstractNotCachedRaster(AbstractRaster):
                     footprint=to_produce,
                     data=np.zeros(tuple(to_produce.shape) + (self._num_bands,)),
                     type="to_produce",
-                    pool=self._produce_pool,
-                    function=self._produce_data
+                    pool=self._produce_pool
                 )
 
                 to_compute = to_produce
@@ -674,6 +671,7 @@ class ResampledRaster(AbstractCachedRaster):
 
         with ds.open_araster(self._primitives["primitive"].path).close as prim:
             data = prim.get_data(compute_fp, band=-1)
+
         print(self.__class__.__name__, " computed data ", threading.currentThread().getName())
         return data
 
@@ -842,28 +840,15 @@ def main():
     dsm_display_tiles = big_dsm_disp_fp.tile_count(5, 5, boundary_effect='shrink')
 
     # rgba_out = resampled_rgba.get_multi_data(list(display_tiles.flat), 5)
-    # rgba_out1 = resampled_rgba.get_multi_data(list(display_tiles.flat), 1)
-    # rgba_out2 = resampled_rgba.get_multi_data(list(display_tiles.flat), 5)
-    # rgba_out3 = resampled_rgba.get_multi_data(list(display_tiles.flat), 5)
-    # rgba_out4 = resampled_rgba.get_multi_data(list(display_tiles.flat), 5)
-    # rgba_out5 = resampled_rgba.get_multi_data(list(display_tiles.flat), 5)
-    # dsm_out = resampled_dsm.get_multi_data(dsm_display_tiles.flat, 1)
+    dsm_out = resampled_dsm.get_multi_data(dsm_display_tiles.flat, 5)
     # slopes_out = slopes.get_multi_data(list(dsm_display_tiles.flat), 5)
-    hm_out = hmr.get_multi_data(display_tiles.flat, 5)
+    # hm_out = hmr.get_multi_data(display_tiles.flat, 5)
 
     for display_fp, dsm_disp_fp in zip(display_tiles.flat, dsm_display_tiles.flat):
         try:
-            # next(dsm_out)
-            # next(slopes_out)
-            next(hm_out)
-            # next(rgba_out)
-            # next(rgba_out1)
-            # next(rgba_out2)
-            # next(rgba_out3)
-            # next(rgba_out4)
-            # next(rgba_out5)
+            next(dsm_out)
             # show_many_images(
-            #     [next(rgba_out), next(slopes_out)[...,0],np.argmax(next(hm_out), axis=-1)], 
+            #     [next(rgba_out), next(slopes_out)[...,0], np.argmax(next(hm_out), axis=-1)], 
             #     extents=[display_fp.extent, dsm_disp_fp.extent, display_fp.extent]
             # )
         except StopIteration:
