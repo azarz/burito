@@ -227,16 +227,36 @@ class AbstractRaster(object):
                     not_ready_list = [future for future in node["futures"] if not future.ready()]
                     if not not_ready_list:
                         try:
+                            if len(node["data"].shape) == 3 and node["data"].shape[2] == 1:
+                                node["data"] = node["data"].squeeze()
                             query.produce.verbed.put(node["data"], timeout=1e-2)
                             query.produce.to_verb.pop(0)
                             self._to_produce_out_occurencies_dict[to_produce] += 1
                             self._graph.remove_node(node_id)
-                            continue
                         except queue.Full:
                             continue
+                    continue
 
                 if node["type"] == "to_produce":
                     continue
+
+                # if the deepest is to_write, writing the data
+                if node["type"] == "to_write" and node["future"] is None:
+                    not_ready_list = [future for future in node["futures"] if not future.ready()]
+                    if not not_ready_list:
+
+                        if len(node["data"].shape) == 3 and node["data"].shape[2] == 1:
+                            node["data"] = node["data"].squeeze()
+
+                        node["future"] = node["pool"].apply_async(
+                            self._write_cache_data,
+                            (
+                                node["footprint"],
+                                node["data"]
+                            )
+                        )
+                    continue
+
 
                 out_edges = self._graph.copy().out_edges(node_id)
 
@@ -253,7 +273,7 @@ class AbstractRaster(object):
                     in_data = node["future"].get()
 
                     for out_edge in out_edges:
-                        if self._graph.nodes[out_edge[1]]["type"] == "to_produce":
+                        if self._graph.nodes[out_edge[1]]["type"] in ("to_produce", "to_write"):
                             self._graph.nodes[out_edge[1]]["futures"].append(self._graph.nodes[out_edge[1]]["pool"].apply_async(
                                 self._graph.nodes[out_edge[1]]["function"],
                                 (
@@ -437,7 +457,7 @@ class AbstractCachedRaster(AbstractRaster):
                     to_produce_uid,
                     footprint=to_produce,
                     futures=[],
-                    data=np.zeros(to_produce.shape),
+                    data=np.zeros(tuple(to_produce.shape) + (self._num_bands,)),
                     type="to_produce",
                     pool=self._produce_pool,
                     function=self._produce_data,
@@ -461,7 +481,7 @@ class AbstractCachedRaster(AbstractRaster):
                     )
                     self._graph.add_edge(to_read_uid, to_produce_uid)
 
-                    # if the tile is written, only reading it
+                    # if the tile is not written, writing it
                     if not self._is_written(to_read):
                         to_write = to_read
 
@@ -475,9 +495,11 @@ class AbstractCachedRaster(AbstractRaster):
                                 to_write_uid,
                                 footprint=to_write,
                                 future=None,
+                                futures=[],
+                                data=np.zeros(tuple(to_write.shape) + (self._num_bands,)),
                                 type="to_write",
                                 pool=self._io_pool,
-                                function=self._write_cache_data,
+                                function=self._produce_data,
                                 in_data=None
                             )
                             self._graph.add_edge(to_write_uid, to_read_uid)
@@ -573,7 +595,7 @@ class AbstractNotCachedRaster(AbstractRaster):
                     to_produce_uid,
                     futures=[],
                     footprint=to_produce,
-                    data=np.zeros(to_produce.shape),
+                    data=np.zeros(tuple(to_produce.shape) + (self._num_bands,)),
                     type="to_produce",
                     pool=self._produce_pool,
                     function=self._produce_data
@@ -653,7 +675,6 @@ class ResampledRaster(AbstractCachedRaster):
         with ds.open_araster(self._primitives["primitive"].path).close as prim:
             data = prim.get_data(compute_fp, band=-1)
         print(self.__class__.__name__, " computed data ", threading.currentThread().getName())
-        print(data.shape)
         return data
 
     def _collect_data(self, to_collect):
@@ -847,6 +868,9 @@ def main():
             # )
         except StopIteration:
             print("ended")
+
+    initial_rgba.close()
+    initial_dsm.close()
 
 if __name__ == "__main__":
     main()
