@@ -205,8 +205,6 @@ class AbstractRaster(object):
                         self._graph.remove_edge(*edge)
 
                     to_pop = query.collect.to_verb[prim].pop(0)
-                    while to_pop in query.collect.to_verb[prim]:
-                        query.collect.to_verb[prim].remove(to_pop)
                 continue
 
             # iterating through the graph
@@ -522,7 +520,8 @@ class AbstractCachedRaster(AbstractRaster):
                                 multi_to_collect = self._to_collect_of_to_compute(to_compute)
 
                                 for key, to_collect_primitive in zip(self._primitives.keys(), multi_to_collect):
-                                    new_query.collect.to_verb[key].append(to_collect_primitive)
+                                    if to_collect_primitive not in new_query.collect.to_verb[key]:
+                                        new_query.collect.to_verb[key].append(to_collect_primitive)
 
                                 for to_collect in multi_to_collect:
                                     to_collect_uid = self._get_graph_uid(to_collect, "to_collect")
@@ -618,7 +617,8 @@ class AbstractNotCachedRaster(AbstractRaster):
                 multi_to_collect = self._to_collect_of_to_compute(to_compute)
 
                 for key, to_collect_primitive in zip(self._primitives.keys(), multi_to_collect):
-                    new_query.collect.to_verb[key].append(to_collect_primitive)
+                    if to_collect_primitive not in new_query.collect.to_verb[key]:
+                        new_query.collect.to_verb[key].append(to_collect_primitive)
 
                 for to_collect in multi_to_collect:
                     to_collect_uid = self._get_graph_uid(to_collect, "to_collect")
@@ -788,14 +788,14 @@ class HeatmapRaster(AbstractCachedRaster):
 
 
     def _compute_data(self, _compute_fp, rgba_data, slope_data):
-        print(self.__class__.__name__, " computing data ", threading.currentThread().getName())
+        print(">>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>", self.__class__.__name__, " computing data ", threading.currentThread().getName())
         rgb_data = np.where((rgba_data[..., 3] == 255)[..., np.newaxis], rgba_data, 0)[..., 0:3]
         rgb = (rgb_data.astype('float32') - 127.5) / 127.5
 
         slopes = slope_data / 45 - 1
 
         prediction = self._model.predict([rgb[np.newaxis], slopes[np.newaxis]])[0]
-        print(self.__class__.__name__, " computed data ", threading.currentThread().getName())
+        print("<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<", self.__class__.__name__, " computed data ", threading.currentThread().getName())
         return prediction
 
 
