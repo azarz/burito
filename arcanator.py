@@ -144,6 +144,8 @@ class AbstractRaster(object):
 
 
     def _burn_data(self, big_fp, to_fill_data, to_burn_fp, to_burn_data):
+        if len(to_fill_data.shape) == 3 and to_fill_data.shape[2] == 1:
+            to_fill_data = to_fill_data.squeeze(axis=-1)
         to_fill_data[to_burn_fp.slice_in(big_fp, clip=True)] = to_burn_data[big_fp.slice_in(to_burn_fp, clip=True)]
 
     def _compute_data(self, compute_fp, data):
@@ -839,18 +841,17 @@ def main():
     display_tiles = big_display_fp.tile_count(5, 5, boundary_effect='shrink')
     dsm_display_tiles = big_dsm_disp_fp.tile_count(5, 5, boundary_effect='shrink')
 
-    # rgba_out = resampled_rgba.get_multi_data(list(display_tiles.flat), 5)
+    rgba_out = resampled_rgba.get_multi_data(list(display_tiles.flat), 5)
     dsm_out = resampled_dsm.get_multi_data(dsm_display_tiles.flat, 5)
-    # slopes_out = slopes.get_multi_data(list(dsm_display_tiles.flat), 5)
-    # hm_out = hmr.get_multi_data(display_tiles.flat, 5)
+    slopes_out = slopes.get_multi_data(list(dsm_display_tiles.flat), 5)
+    hm_out = hmr.get_multi_data(display_tiles.flat, 5)
 
     for display_fp, dsm_disp_fp in zip(display_tiles.flat, dsm_display_tiles.flat):
         try:
-            next(dsm_out)
-            # show_many_images(
-            #     [next(rgba_out), next(slopes_out)[...,0], np.argmax(next(hm_out), axis=-1)], 
-            #     extents=[display_fp.extent, dsm_disp_fp.extent, display_fp.extent]
-            # )
+            show_many_images(
+                [next(rgba_out), next(slopes_out)[...,0], np.argmax(next(hm_out), axis=-1)], 
+                extents=[display_fp.extent, dsm_disp_fp.extent, display_fp.extent]
+            )
         except StopIteration:
             print("ended")
 
