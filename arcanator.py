@@ -62,7 +62,7 @@ def output_fp_to_input_fp(fp, scale, rsize):
     return out
 
 
-class AbstractRaster(object):
+class Raster(object):
     """
     Abstract class defining the raster behaviour
     """
@@ -154,6 +154,9 @@ class AbstractRaster(object):
     def _get_graph_uid(self, fp, _type):
         return hash(repr(fp) + _type)
 
+    def _to_collect_of_to_compute(self, fp):
+        raise NotImplementedError()
+
     def _scheduler(self):
         print(self.__class__.__name__, " scheduler in ", threading.currentThread().getName())
 
@@ -173,7 +176,7 @@ class AbstractRaster(object):
                 self._queries.remove(query)
                 continue
 
-            # if the emptiest query is full, wainting
+            # if the emptiest query is full, waiting
             if query.produce.verbed.full():
                 continue
 
@@ -324,7 +327,65 @@ class AbstractRaster(object):
 
 
     def _update_graph_from_queries(self):
-        raise NotImplementedError()
+        """
+        Updates the dependency graph from the new queries (NO CACHE!)
+        """
+
+        while self._new_queries:
+            new_query = self._new_queries.pop(0)
+
+            # [
+            #    [to_collect_p1_1, ..., to_collect_p1_n],
+            #    ...,
+            #    [to_collect_pp_1, ..., to_collect_pp_n]
+            # ]
+            # with p # of primitives and n # of to_compute fps
+
+            # initializing to_collect dictionnary
+            new_query.collect.to_verb = {key: [] for key in self._primitives.keys()}
+
+            for to_produce in new_query.produce.to_verb:
+                to_produce_uid = self._get_graph_uid(to_produce, "to_produce" + str(self._to_produce_in_occurencies_dict[to_produce]))
+                self._to_produce_in_occurencies_dict[to_produce] += 1
+                self._graph.add_node(
+                    to_produce_uid,
+                    futures=[],
+                    footprint=to_produce,
+                    data=np.zeros(tuple(to_produce.shape) + (self._num_bands,)),
+                    type="to_produce"
+                )
+
+                to_compute = to_produce
+
+                to_compute_uid = self._get_graph_uid(to_compute, "to_compute")
+
+                self._graph.add_node(
+                    to_compute_uid,
+                    footprint=to_compute,
+                    future=None,
+                    type="to_compute",
+                    pool=self._computation_pool,
+                    function=self._compute_data,
+                    in_data=None
+                )
+                self._graph.add_edge(to_compute_uid, to_produce_uid)
+                multi_to_collect = self._to_collect_of_to_compute(to_compute)
+
+                for key, to_collect_primitive in zip(self._primitives.keys(), multi_to_collect):
+                    if to_collect_primitive not in new_query.collect.to_verb[key]:
+                        new_query.collect.to_verb[key].append(to_collect_primitive)
+
+                for to_collect in multi_to_collect:
+                    to_collect_uid = self._get_graph_uid(to_collect, "to_collect")
+                    self._graph.add_node(
+                        to_collect_uid,
+                        footprints=to_collect,
+                        future=None,
+                        type="to_collect"
+                    )
+                    self._graph.add_edge(to_collect_uid, to_compute_uid)
+
+            new_query.collect.verbed = self._collect_data(new_query.collect.to_verb)
 
 
     def get_multi_data_queue(self, fp_iterable, queue_size=5):
@@ -347,6 +408,7 @@ class AbstractRaster(object):
         returns a  generator from a fp_iterable
         """
         out_queue = self.get_multi_data_queue(fp_iterable, queue_size)
+
         def out_generator():
             """
             output generator from the queue. next() waits the .get() to end
@@ -370,7 +432,7 @@ class AbstractRaster(object):
 
 
 
-class AbstractCachedRaster(AbstractRaster):
+class CachedRaster(Raster):
     """
     Cached implementation of abstract raster
     """
@@ -400,7 +462,6 @@ class AbstractCachedRaster(AbstractRaster):
 
 
     def _read_cache_data(self, cache_tile, _placeholder=None):
-        print(self.__class__.__name__, " reading in ", threading.currentThread().getName())
         filepath = self._get_cache_tile_path(cache_tile)
 
         if not hasattr(self._thread_storage, "ds"):
@@ -411,12 +472,10 @@ class AbstractCachedRaster(AbstractRaster):
 
         with ds.open_araster(filepath).close as src:
             data = src.get_data(band=-1, fp=cache_tile)
-        print(self.__class__.__name__, " reading out ", threading.currentThread().getName())
         return data
 
 
     def _write_cache_data(self, cache_tile, data):
-        print(self.__class__.__name__, " writing in ", threading.currentThread().getName())
         filepath = self._get_cache_tile_path(cache_tile)
         if not hasattr(self._thread_storage, "ds"):
             ds = buzz.DataSource(allow_interpolation=True)
@@ -433,7 +492,6 @@ class AbstractCachedRaster(AbstractRaster):
                                      )
         out_proxy.set_data(data, band=-1)
         out_proxy.close()
-        print(self.__class__.__name__, " writing out ", threading.currentThread().getName())
 
 
     def _update_graph_from_queries(self):
@@ -566,87 +624,7 @@ class AbstractCachedRaster(AbstractRaster):
 
 
 
-
-
-class AbstractNotCachedRaster(AbstractRaster):
-    """
-    implementation of abstract raster without cache
-    """
-
-    def _update_graph_from_queries(self):
-        """
-        Updates the dependency graph from the new queries
-        """
-
-        while self._new_queries:
-            new_query = self._new_queries.pop(0)
-
-            # [
-            #    [to_collect_p1_1, ..., to_collect_p1_n],
-            #    ...,
-            #    [to_collect_pp_1, ..., to_collect_pp_n]
-            # ]
-            # with p # of primitives and n # of to_compute fps
-
-            # initializing to_collect dictionnary
-            new_query.collect.to_verb = {key: [] for key in self._primitives.keys()}
-
-            for to_produce in new_query.produce.to_verb:
-                to_produce_uid = self._get_graph_uid(to_produce, "to_produce" + str(self._to_produce_in_occurencies_dict[to_produce]))
-                self._to_produce_in_occurencies_dict[to_produce] += 1
-                self._graph.add_node(
-                    to_produce_uid,
-                    futures=[],
-                    footprint=to_produce,
-                    data=np.zeros(tuple(to_produce.shape) + (self._num_bands,)),
-                    type="to_produce"
-                )
-
-                to_compute = to_produce
-
-                to_compute_uid = self._get_graph_uid(to_compute, "to_compute")
-
-                self._graph.add_node(
-                    to_compute_uid,
-                    footprint=to_compute,
-                    future=None,
-                    type="to_compute",
-                    pool=self._computation_pool,
-                    function=self._compute_data,
-                    in_data=None
-                )
-                self._graph.add_edge(to_compute_uid, to_produce_uid)
-                multi_to_collect = self._to_collect_of_to_compute(to_compute)
-
-                for key, to_collect_primitive in zip(self._primitives.keys(), multi_to_collect):
-                    if to_collect_primitive not in new_query.collect.to_verb[key]:
-                        new_query.collect.to_verb[key].append(to_collect_primitive)
-
-                for to_collect in multi_to_collect:
-                    to_collect_uid = self._get_graph_uid(to_collect, "to_collect")
-                    self._graph.add_node(
-                        to_collect_uid,
-                        footprints=to_collect,
-                        future=None,
-                        type="to_collect"
-                    )
-                    self._graph.add_edge(to_collect_uid, to_compute_uid)
-
-            new_query.collect.verbed = self._collect_data(new_query.collect.to_verb)
-
-
-    def _to_collect_of_to_compute(self, fp):
-        raise NotImplementedError()
-
-    def _compute_data(self, compute_fp, *data):
-        raise NotImplementedError('Should be implemented by all subclasses')
-
-
-
-
-
-
-class ResampledRaster(AbstractCachedRaster):
+class ResampledRaster(CachedRaster):
     """
     resampled raster from buzzard raster
     """
@@ -668,8 +646,6 @@ class ResampledRaster(AbstractCachedRaster):
 
 
     def _compute_data(self, compute_fp, *data):
-        print(self.__class__.__name__, " computing data ", threading.currentThread().getName())
-
         if not hasattr(self._thread_storage, "ds"):
             ds = buzz.DataSource(allow_interpolation=True)
             self._thread_storage.ds = ds
@@ -679,7 +655,6 @@ class ResampledRaster(AbstractCachedRaster):
         with ds.open_araster(self._primitives["primitive"].path).close as prim:
             got_data = prim.get_data(compute_fp, band=-1)
 
-        print(self.__class__.__name__, " computed data ", threading.currentThread().getName())
         return got_data
 
     def _collect_data(self, to_collect):
@@ -698,7 +673,7 @@ class ResampledRaster(AbstractCachedRaster):
 
 
 
-class Slopes(AbstractNotCachedRaster):
+class Slopes(Raster):
     """
     slopes from a raster (abstract raster)
     """
@@ -711,7 +686,6 @@ class Slopes(AbstractNotCachedRaster):
 
 
     def _compute_data(self, compute_fp, *data):
-        print(self.__class__.__name__, " computing data ", threading.currentThread().getName())
         arr, = data
         assert arr.shape == tuple(compute_fp.dilate(1).shape)
         nodata_mask = arr == self._nodata
@@ -743,7 +717,7 @@ class Slopes(AbstractNotCachedRaster):
 
 
 
-class HeatmapRaster(AbstractCachedRaster):
+class HeatmapRaster(CachedRaster):
     """
     heatmap raster with primitives: ortho + slopes
     """
@@ -782,7 +756,6 @@ class HeatmapRaster(AbstractCachedRaster):
 
 
     def _compute_data(self, compute_fp, *data):
-        print(">>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>", self.__class__.__name__, " computing data ", threading.currentThread().getName())
         rgba_data, slope_data = data
         rgb_data = np.where((rgba_data[..., 3] == 255)[..., np.newaxis], rgba_data, 0)[..., 0:3]
         rgb = (rgb_data.astype('float32') - 127.5) / 127.5
@@ -791,17 +764,13 @@ class HeatmapRaster(AbstractCachedRaster):
 
         prediction = self._model.predict([rgb[np.newaxis], slopes[np.newaxis]])[0]
         assert prediction.shape[0:2] == tuple(compute_fp.shape)
-        print("<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<", self.__class__.__name__, " computed data ", threading.currentThread().getName())
         return prediction
 
 
 
 
-class Raster(AbstractCachedRaster, AbstractNotCachedRaster):
-    """
-    Class that should be used
-    """
-    def __init__(self,
+
+def raster_factory(self,
                  footprint,
                  dtype,
                  nbands,
@@ -817,9 +786,9 @@ class Raster(AbstractCachedRaster, AbstractNotCachedRaster):
                  to_collect_of_to_compute,
                  to_compute_fps):
         if cached:
-            AbstractCachedRaster.__init__(footprint, "change_that_parameter_plz")
+            raster = CachedRaster(footprint, cache_dir, cache_fps)
         else:
-            AbstractNotCachedRaster.__init__(footprint)
+            raster = Raster(footprint)
 
         self._compute_data = computation_function
         self._dtype = dtype
@@ -888,10 +857,9 @@ def main():
     display_tiles = big_display_fp.tile_count(5, 5, boundary_effect='shrink')
     dsm_display_tiles = big_dsm_disp_fp.tile_count(5, 5, boundary_effect='shrink')
 
-    rgba_out = resampled_rgba.get_multi_data(list(display_tiles.flat), 5)
-    dsm_out = resampled_dsm.get_multi_data(dsm_display_tiles.flat, 5)
-    slopes_out = slopes.get_multi_data(list(dsm_display_tiles.flat), 5)
-    hm_out = hmr.get_multi_data(display_tiles.flat, 5)
+    rgba_out = resampled_rgba.get_multi_data(list(display_tiles.flat), 1)
+    slopes_out = slopes.get_multi_data(list(dsm_display_tiles.flat), 1)
+    hm_out = hmr.get_multi_data(display_tiles.flat, 1)
 
     for display_fp, dsm_disp_fp in zip(display_tiles.flat, dsm_display_tiles.flat):
         try:
