@@ -1,3 +1,7 @@
+"""
+Multi-threaded, back pressure management, caching
+"""
+
 from pathlib import Path
 import multiprocessing as mp
 import multiprocessing.pool
@@ -66,10 +70,31 @@ class Raster(object):
     """
     Abstract class defining the raster behaviour
     """
-    def __init__(self, full_fp):
+    def __init__(self,
+                 footprint,
+                 dtype,
+                 nbands,
+                 nodata,
+                 srs,
+                 computation_function,
+                 io_pool,
+                 computation_pool,
+                 primitives,
+                 to_collect_of_to_compute):
+
+        self._full_fp = footprint
+        self._compute_data = computation_function
+        self._dtype = dtype
+        self._num_bands = nbands
+        self._nodata = nodata
+        self._wkt_origin = srs
+        self._io_pool = io_pool
+        self._computation_pool = computation_pool
+        self._primitives = primitives
+        self._to_collect_of_to_compute = to_collect_of_to_compute
+
         self._queries = []
         self._new_queries = []
-        self._primitives = {}
 
         self._scheduler_thread = threading.Thread(target=self._scheduler, daemon=True)
         self._scheduler_thread.start()
@@ -79,13 +104,6 @@ class Raster(object):
         self._merge_pool = mp.pool.ThreadPool()
 
         self._thread_storage = threading.local()
-
-        self._full_fp = full_fp
-
-        self._num_bands = None  # to implement in subclasses
-        self._nodata = None     # to implement in subclasses
-        self._wkt_origin = None # to implement in subclasses
-        self._dtype = None      # to implement in subclasses
 
         self._graph = nx.DiGraph()
 
@@ -148,14 +166,8 @@ class Raster(object):
             to_fill_data = to_fill_data.squeeze(axis=-1)
         to_fill_data[to_burn_fp.slice_in(big_fp, clip=True)] = to_burn_data[big_fp.slice_in(to_burn_fp, clip=True)]
 
-    def _compute_data(self, compute_fp, *data):
-        raise NotImplementedError('Should be implemented by all subclasses')
-
     def _get_graph_uid(self, fp, _type):
         return hash(repr(fp) + _type)
-
-    def _to_collect_of_to_compute(self, fp):
-        raise NotImplementedError()
 
     def _scheduler(self):
         print(self.__class__.__name__, " scheduler in ", threading.currentThread().getName())
@@ -436,13 +448,33 @@ class CachedRaster(Raster):
     """
     Cached implementation of abstract raster
     """
-    def __init__(self, full_fp, cache_dir, cache_fps):
-        super().__init__(full_fp)
-        self._cache_dir = cache_dir
+    def __init__(self,
+                 footprint,
+                 dtype,
+                 nbands,
+                 nodata,
+                 srs,
+                 computation_function,
+                 cache_dir,
+                 cache_fps,
+                 io_pool,
+                 computation_pool,
+                 primitives,
+                 to_collect_of_to_compute,
+                 to_compute_fps):
 
-        tile_count = np.ceil(self._full_fp.rsize / 500)
+        super().__init__(footprint, dtype, nbands, nodata, srs,
+                         computation_function,
+                         io_pool,
+                         computation_pool,
+                         primitives,
+                         to_collect_of_to_compute
+                        )
+
+        self._computation_tiles = to_compute_fps
+
+        self._cache_dir = cache_dir
         self._cache_tiles = cache_fps
-        self._computation_tiles = self._full_fp.tile_count(*tile_count, boundary_effect='shrink')
 
         # Used to keep duplicates in to_read
         self._to_read_in_occurencies_dict = defaultdict(int)
@@ -618,9 +650,6 @@ class CachedRaster(Raster):
         return to_compute_list
 
 
-    def _to_collect_of_to_compute(self, fp):
-        raise NotImplementedError()
-
 
 
 
@@ -633,41 +662,52 @@ class ResampledRaster(CachedRaster):
 
         full_fp = raster.fp.intersection(raster.fp, scale=scale, alignment=(0, 0))
 
-        super().__init__(full_fp, cache_dir, cache_fps)
+        num_bands = len(raster)
+        nodata = raster.nodata
+        wkt_origin = raster.wkt_origin
+        dtype = raster.dtype
 
-        self._cache_tiles = cache_fps
-        self._num_bands = len(raster)
-        self._nodata = raster.nodata
-        self._wkt_origin = raster.wkt_origin
-        self._dtype = raster.dtype
+        primitives = {"primitive": raster}
 
-        self._primitives = {"primitive": raster}
+        computation_pool = mp.pool.ThreadPool()
+        io_pool = mp.pool.ThreadPool()
 
+        def compute_data(self, compute_fp, *data):
+            """
+            resampled raster compted data when collecting. this is a particular case
+            """
+            if not hasattr(self._thread_storage, "ds"):
+                ds = buzz.DataSource(allow_interpolation=True)
+                self._thread_storage.ds = ds
+            else:
+                ds = self._thread_storage.ds
 
+            with ds.open_araster(self._primitives["primitive"].path).close as prim:
+                got_data = prim.get_data(compute_fp, band=-1)
 
-    def _compute_data(self, compute_fp, *data):
-        if not hasattr(self._thread_storage, "ds"):
-            ds = buzz.DataSource(allow_interpolation=True)
-            self._thread_storage.ds = ds
-        else:
-            ds = self._thread_storage.ds
+            return got_data
 
-        with ds.open_araster(self._primitives["primitive"].path).close as prim:
-            got_data = prim.get_data(compute_fp, band=-1)
+        def collect_data(to_collect):
+            """
+            mocks the behaviour of a primitive so the general function works
+            """
+            result = queue.Queue()
+            for _ in to_collect["primitive"]:
+                result.put([])
+            return {"primitive": result}
 
-        return got_data
+        def to_collect_of_to_compute(fp):
+            """
+            mocks the behaviour of a tranformation
+            """
+            return [fp]
 
-    def _collect_data(self, to_collect):
-        """
-        mocks the behaviour of a primitive so the general function works
-        """
-        result = queue.Queue()
-        for _ in to_collect["primitive"]:
-            result.put([])
-        return {"primitive": result}
+        super().__init__(full_fp, dtype, num_bands, nodata, wkt_origin,
+                         compute_data, cache_dir, cache_fps, io_pool, computation_pool,
+                         primitives, to_collect_of_to_compute, cache_fps
+                        )
 
-    def _to_collect_of_to_compute(self, fp):
-        return [fp]
+        self._collect_data = collect_data
 
 
 
@@ -678,41 +718,62 @@ class Slopes(Raster):
     slopes from a raster (abstract raster)
     """
     def __init__(self, dsm):
-        super().__init__(dsm.fp)
-        self._primitives = {"dsm": dsm}
-        self._nodata = dsm.nodata
-        self._num_bands = 2
-        self._dtype = "float32"
+        def compute_data(compute_fp, *data):
+            """
+            computes up and down slopes
+            """
+            arr, = data
+            assert arr.shape == tuple(compute_fp.dilate(1).shape)
+            nodata_mask = arr == self._nodata
+            nodata_mask = ndi.binary_dilation(nodata_mask)
+            kernel = [
+                [0, 1, 0],
+                [1, 1, 1],
+                [0, 1, 0],
+            ]
+            arru = ndi.maximum_filter(arr, None, kernel) - arr
+            arru = np.arctan(arru / self.pxsizex)
+            arru = arru / np.pi * 180.
+            arru[nodata_mask] = 0
+            arru = arru[1:-1, 1:-1]
+
+            arrd = arr - ndi.minimum_filter(arr, None, kernel)
+            arrd = np.arctan(arrd / self.pxsizex)
+            arrd = arrd / np.pi * 180.
+            arrd[nodata_mask] = 0
+            arrd = arrd[1:-1, 1:-1]
+
+            arr = np.dstack([arrd, arru])
+            return arr
 
 
-    def _compute_data(self, compute_fp, *data):
-        arr, = data
-        assert arr.shape == tuple(compute_fp.dilate(1).shape)
-        nodata_mask = arr == self._nodata
-        nodata_mask = ndi.binary_dilation(nodata_mask)
-        kernel = [
-            [0, 1, 0],
-            [1, 1, 1],
-            [0, 1, 0],
-        ]
-        arru = ndi.maximum_filter(arr, None, kernel) - arr
-        arru = np.arctan(arru / self.pxsizex)
-        arru = arru / np.pi * 180.
-        arru[nodata_mask] = 0
-        arru = arru[1:-1, 1:-1]
+        def to_collect_of_to_compute(fp):
+            """
+            computes to collect from to compute (dilation of 1)
+            """
+            return [fp.dilate(1)]
 
-        arrd = arr - ndi.minimum_filter(arr, None, kernel)
-        arrd = np.arctan(arrd / self.pxsizex)
-        arrd = arrd / np.pi * 180.
-        arrd[nodata_mask] = 0
-        arrd = arrd[1:-1, 1:-1]
+        full_fp = dsm.fp
+        primitives = {"dsm": dsm}
+        nodata = dsm.nodata
+        num_bands = 2
+        dtype = "float32"
+        computation_pool = mp.pool.ThreadPool()
+        io_pool = mp.pool.ThreadPool()
 
-        arr = np.dstack([arrd, arru])
-        return arr
+        super().__init__(full_fp,
+                         dtype,
+                         num_bands,
+                         nodata,
+                         None,
+                         compute_data,
+                         io_pool,
+                         computation_pool,
+                         primitives,
+                         to_collect_of_to_compute
+                        )
 
 
-    def _to_collect_of_to_compute(self, fp):
-        return [fp.dilate(1)]
 
 
 
@@ -724,82 +785,102 @@ class HeatmapRaster(CachedRaster):
 
     def __init__(self, model, resampled_rgba, slopes, cache_dir, cache_fps):
 
+        def to_collect_of_to_compute(fp):
+            """
+            Computes the to_collect data from model 
+            """
+            rgba_tile = output_fp_to_input_fp(fp, 0.64, model.get_layer("rgb").input_shape[1])
+            dsm_tile = output_fp_to_input_fp(fp, 1.28, model.get_layer("slopes").input_shape[1])
+            return [rgba_tile, dsm_tile]
+
+        def compute_data(compute_fp, *data):
+            """
+            predicts data using model
+            """
+            rgba_data, slope_data = data
+            rgb_data = np.where((rgba_data[..., 3] == 255)[..., np.newaxis], rgba_data, 0)[..., 0:3]
+            rgb = (rgb_data.astype('float32') - 127.5) / 127.5
+
+            slopes = slope_data / 45 - 1
+
+            prediction = model.predict([rgb[np.newaxis], slopes[np.newaxis]])[0]
+            assert prediction.shape[0:2] == tuple(compute_fp.shape)
+            return prediction
+
+
+        dtype = "float32"
+
+        num_bands = LABEL_COUNT
+
+        primitives = {"rgba": resampled_rgba, "slopes": slopes}
+
         max_scale = max(resampled_rgba.fp.scale[0], slopes.fp.scale[0])
         min_scale = min(resampled_rgba.fp.scale[0], slopes.fp.scale[0])
 
         full_fp = resampled_rgba.fp.intersection(slopes.fp, scale=max_scale, alignment=(0, 0))
+        full_fp = full_fp.intersection(full_fp, scale=min_scale)
 
-        super().__init__(full_fp, cache_dir, cache_fps)
-        self._computation_pool = mp.pool.ThreadPool(5)
+        computation_tiles = full_fp.tile(np.asarray(model.outputs[0].shape[1:3]).T)
 
-        self._dtype = "float32"
+        io_pool = mp.pool.ThreadPool()
+        computation_pool = mp.pool.ThreadPool(1)
 
-        self._model = model
-        self._num_bands = LABEL_COUNT
-
-        self._primitives = {"rgba": resampled_rgba, "slopes": slopes}
-
-        self._full_fp = self._full_fp.intersection(self._full_fp, scale=min_scale)
-
-        self._computation_tiles = self._full_fp.tile(np.asarray(model.outputs[0].shape[1:3]).T)
-
-        tile_count = np.ceil(self._full_fp.rsize / 500)
-        self._cache_tiles = self._full_fp.tile_count(*tile_count, boundary_effect='shrink')
-
-        self._computation_pool = mp.pool.ThreadPool(1)
-
-
-    def _to_collect_of_to_compute(self, fp):
-        rgba_tile = output_fp_to_input_fp(fp, 0.64, self._model.get_layer("rgb").input_shape[1])
-        dsm_tile = output_fp_to_input_fp(fp, 1.28, self._model.get_layer("slopes").input_shape[1])
-        return [rgba_tile, dsm_tile]
-
-
-    def _compute_data(self, compute_fp, *data):
-        rgba_data, slope_data = data
-        rgb_data = np.where((rgba_data[..., 3] == 255)[..., np.newaxis], rgba_data, 0)[..., 0:3]
-        rgb = (rgb_data.astype('float32') - 127.5) / 127.5
-
-        slopes = slope_data / 45 - 1
-
-        prediction = self._model.predict([rgb[np.newaxis], slopes[np.newaxis]])[0]
-        assert prediction.shape[0:2] == tuple(compute_fp.shape)
-        return prediction
+        super().__init__(full_fp, dtype, num_bands, None, None,
+                         compute_data, cache_dir, cache_fps, io_pool, computation_pool,
+                         primitives, to_collect_of_to_compute, computation_tiles
+                        )
 
 
 
 
 
-def raster_factory(self,
-                 footprint,
-                 dtype,
-                 nbands,
-                 nodata,
-                 srs,
-                 computation_function,
-                 cached,
-                 cache_dir,
-                 cache_fps,
-                 io_pool,
-                 computation_pool,
-                 primitives,
-                 to_collect_of_to_compute,
-                 to_compute_fps):
-        if cached:
-            raster = CachedRaster(footprint, cache_dir, cache_fps)
-        else:
-            raster = Raster(footprint)
+def raster_factory(footprint,
+                   dtype,
+                   nbands,
+                   nodata,
+                   srs,
+                   computation_function,
+                   cached,
+                   cache_dir,
+                   cache_fps,
+                   io_pool,
+                   computation_pool,
+                   primitives,
+                   to_collect_of_to_compute,
+                   to_compute_fps):
+    """
+    creates a raster from arguments
+    """
 
-        self._compute_data = computation_function
-        self._dtype = dtype
-        self._num_bands = nbands
-        self._nodata = nodata
-        self._wkt_origin = srs
-        self._io_pool = io_pool
-        self._computation_pool = computation_pool
-        self.primitives = primitives
-        self._to_collect_of_to_compute = to_collect_of_to_compute
-        self._computation_tiles = to_compute_fps
+    if cached:
+        raster = CachedRaster(footprint,
+                              dtype,
+                              nbands,
+                              nodata,
+                              srs,
+                              computation_function,
+                              cache_dir,
+                              cache_fps,
+                              io_pool,
+                              computation_pool,
+                              primitives,
+                              to_collect_of_to_compute,
+                              to_compute_fps
+                             )
+    else:
+        raster = Raster(footprint,
+                        dtype,
+                        nbands,
+                        nodata,
+                        srs,
+                        computation_function,
+                        io_pool,
+                        computation_pool,
+                        primitives,
+                        to_collect_of_to_compute
+                       )
+
+    return raster
 
 
 
