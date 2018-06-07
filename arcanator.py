@@ -99,8 +99,8 @@ class Raster(object):
         self._scheduler_thread = threading.Thread(target=self._scheduler, daemon=True)
         self._scheduler_thread.start()
 
-        self._computation_pool = mp.pool.ThreadPool()
-        self._io_pool = mp.pool.ThreadPool()
+        # self._computation_pool = mp.pool.ThreadPool()
+        # self._io_pool = mp.pool.ThreadPool()
         self._merge_pool = mp.pool.ThreadPool()
 
         self._thread_storage = threading.local()
@@ -672,7 +672,7 @@ class ResampledRaster(CachedRaster):
         computation_pool = mp.pool.ThreadPool()
         io_pool = mp.pool.ThreadPool()
 
-        def compute_data(self, compute_fp, *data):
+        def compute_data(compute_fp, *data):
             """
             resampled raster compted data when collecting. this is a particular case
             """
@@ -797,6 +797,7 @@ class HeatmapRaster(CachedRaster):
             """
             predicts data using model
             """
+            print(">>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>")
             rgba_data, slope_data = data
             rgb_data = np.where((rgba_data[..., 3] == 255)[..., np.newaxis], rgba_data, 0)[..., 0:3]
             rgb = (rgb_data.astype('float32') - 127.5) / 127.5
@@ -805,6 +806,7 @@ class HeatmapRaster(CachedRaster):
 
             prediction = model.predict([rgb[np.newaxis], slopes[np.newaxis]])[0]
             assert prediction.shape[0:2] == tuple(compute_fp.shape)
+            print("<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<")
             return prediction
 
 
@@ -935,18 +937,19 @@ def main():
     big_display_fp = out_fp
     big_dsm_disp_fp = big_display_fp.intersection(big_display_fp, scale=1.28, alignment=(0, 0))
 
-    display_tiles = big_display_fp.tile_count(5, 5, boundary_effect='shrink')
+    tile_count64 = np.ceil(out_fp.rsize / 100)
+    display_tiles = big_display_fp.tile_count(*tile_count64, boundary_effect='shrink')
     dsm_display_tiles = big_dsm_disp_fp.tile_count(5, 5, boundary_effect='shrink')
 
-    rgba_out = resampled_rgba.get_multi_data(list(display_tiles.flat), 1)
-    slopes_out = slopes.get_multi_data(list(dsm_display_tiles.flat), 1)
-    hm_out = hmr.get_multi_data(display_tiles.flat, 1)
+    # rgba_out = resampled_rgba.get_multi_data(list(cache_tiles64.flat), 1)
+    # slopes_out = slopes.get_multi_data(list(cache_tiles128.flat), 1)
+    hm_out = hmr.get_multi_data(cache_tiles64.flat, 1)
 
-    for display_fp, dsm_disp_fp in zip(display_tiles.flat, dsm_display_tiles.flat):
+    for display_fp in cache_tiles64.flat:
         try:
             show_many_images(
-                [next(rgba_out), next(slopes_out)[..., 0], np.argmax(next(hm_out), axis=-1)],
-                extents=[display_fp.extent, dsm_disp_fp.extent, display_fp.extent]
+                [np.argmax(next(hm_out), axis=-1)],
+                extents=[display_fp.extent]
             )
         except StopIteration:
             print("ended")
