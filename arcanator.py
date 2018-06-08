@@ -174,6 +174,7 @@ class Raster(object):
 
         while True:
             time.sleep(1e-2)
+
             if not self._queries:
                 continue
 
@@ -302,7 +303,6 @@ class Raster(object):
                             self._graph.nodes[out_edge[1]]["in_data"] = in_data
                         self._graph.remove_edge(*out_edge)
 
-                break
 
             self._clean_graph()
 
@@ -332,6 +332,7 @@ class Raster(object):
         #    [to_collect_pp_1, ..., to_collect_pp_n]
         #]
         # out: [queue_1, queue_2, ..., queue_p]
+        print(self.__class__.__name__, " collecting ", threading.currentThread().getName())
         results = {}
         for primitive in self._primitives.keys():
             results[primitive] = self._primitives[primitive].get_multi_data_queue(to_collect[primitive])
@@ -344,6 +345,7 @@ class Raster(object):
         """
 
         while self._new_queries:
+            print(self.__class__.__name__, " updating graph ", threading.currentThread().getName())
             new_query = self._new_queries.pop(0)
 
             # [
@@ -494,6 +496,7 @@ class CachedRaster(Raster):
 
 
     def _read_cache_data(self, cache_tile, _placeholder=None):
+        print(self.__class__.__name__, " reading ", threading.currentThread().getName())
         filepath = self._get_cache_tile_path(cache_tile)
 
         if not hasattr(self._thread_storage, "ds"):
@@ -508,6 +511,7 @@ class CachedRaster(Raster):
 
 
     def _write_cache_data(self, cache_tile, data):
+        print(self.__class__.__name__, " writing ", threading.currentThread().getName())
         filepath = self._get_cache_tile_path(cache_tile)
         if not hasattr(self._thread_storage, "ds"):
             ds = buzz.DataSource(allow_interpolation=True)
@@ -532,6 +536,7 @@ class CachedRaster(Raster):
         """
 
         while self._new_queries:
+            print(self.__class__.__name__, " updating graph ", threading.currentThread().getName())
             new_query = self._new_queries.pop(0)
 
             # [
@@ -676,6 +681,7 @@ class ResampledRaster(CachedRaster):
             """
             resampled raster compted data when collecting. this is a particular case
             """
+            print(self.__class__.__name__, " computing ", threading.currentThread().getName())
             if not hasattr(self._thread_storage, "ds"):
                 ds = buzz.DataSource(allow_interpolation=True)
                 self._thread_storage.ds = ds
@@ -685,12 +691,15 @@ class ResampledRaster(CachedRaster):
             with ds.open_araster(self._primitives["primitive"].path).close as prim:
                 got_data = prim.get_data(compute_fp, band=-1)
 
+            assert len(data) == 1
+
             return got_data
 
         def collect_data(to_collect):
             """
             mocks the behaviour of a primitive so the general function works
             """
+            print(self.__class__.__name__, " collecting ", threading.currentThread().getName())
             result = queue.Queue()
             for _ in to_collect["primitive"]:
                 result.put([])
@@ -722,6 +731,7 @@ class Slopes(Raster):
             """
             computes up and down slopes
             """
+            print(self.__class__.__name__, " computing", threading.currentThread().getName())
             arr, = data
             assert arr.shape == tuple(compute_fp.dilate(1).shape)
             nodata_mask = arr == self._nodata
@@ -787,7 +797,7 @@ class HeatmapRaster(CachedRaster):
 
         def to_collect_of_to_compute(fp):
             """
-            Computes the to_collect data from model 
+            Computes the to_collect data from model
             """
             rgba_tile = output_fp_to_input_fp(fp, 0.64, model.get_layer("rgb").input_shape[1])
             dsm_tile = output_fp_to_input_fp(fp, 1.28, model.get_layer("slopes").input_shape[1])
