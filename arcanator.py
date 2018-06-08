@@ -236,7 +236,7 @@ class Raster(object):
                 for node_id in depth_node_ids:
                     node = self._graph.nodes[node_id]
 
-                    if len(self._graph.out_edges(node_id)) > 0 and node["type"] != "to_produce":
+                    if len(self._graph.out_edges(node_id)) > 0 and node["type"]:
                         continue
 
                     if node["type"] == "to_collect":
