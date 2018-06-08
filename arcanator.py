@@ -210,13 +210,13 @@ class Raster(object):
 
                 # for each graph edge out of the collected, applying the asyncresult to the out node
                 for prim in self._primitives.keys():
-                    collect_out_edges = (self._graph.copy().out_edges(self._get_graph_uid(query.collect.to_verb[prim][0], "to_collect")))
+                    collect_in_edges = (self._graph.copy().in_edges(self._get_graph_uid(query.collect.to_verb[prim][0], "to_collect")))
 
-                    for edge in collect_out_edges:
-                        self._graph.nodes[edge[1]]["future"] = self._computation_pool.apply_async(
+                    for edge in collect_in_edges:
+                        self._graph.nodes[edge[0]]["future"] = self._computation_pool.apply_async(
                             self._compute_data,
                             (
-                                self._graph.nodes[edge[1]]["footprint"],
+                                self._graph.nodes[edge[0]]["footprint"],
                                 *collected_data
                             )
                         )
@@ -228,17 +228,17 @@ class Raster(object):
             # iterating through the graph
             for index, to_produce in enumerate(query.produce.to_verb):
                 # beginning at to_produce
-                node_id = self._get_graph_uid(to_produce, "to_produce" + str(self._to_produce_out_occurencies_dict[to_produce]))
+                first_node_id = self._get_graph_uid(to_produce, "to_produce" + str(self._to_produce_out_occurencies_dict[to_produce]))
 
                 # going as deep as possible
-                depth_node_ids = nx.dfs_postorder_nodes(self._graph, node_id)
+                depth_node_ids = nx.dfs_postorder_nodes(self._graph.copy(), source=first_node_id)
                 for node_id in depth_node_ids:
 
                     node = self._graph.nodes[node_id]
 
-                    if len(self._graph.in_edges(node_id)) > 0 and node["type"] != "to_produce":
+                    if len(self._graph.out_edges(node_id)) > 0 and node["type"] not in ("to_produce", "to_write"):
                         continue
-        
+
                     if node["type"] == "to_collect":
                         continue
 
@@ -277,8 +277,7 @@ class Raster(object):
                             )
                         continue
 
-
-                    out_edges = self._graph.copy().out_edges(node_id)
+                    in_edges = self._graph.copy().in_edges(node_id)
 
                     if node["future"] is None:
                         node["future"] = node["pool"].apply_async(
@@ -292,20 +291,20 @@ class Raster(object):
                     elif node["future"].ready():
                         in_data = node["future"].get()
 
-                        for out_edge in out_edges:
-                            if self._graph.nodes[out_edge[1]]["type"] in ("to_produce", "to_write"):
-                                self._graph.nodes[out_edge[1]]["futures"].append(self._merge_pool.apply_async(
+                        for in_edge in in_edges:
+                            if self._graph.nodes[in_edge[0]]["type"] in ("to_produce", "to_write"):
+                                self._graph.nodes[in_edge[0]]["futures"].append(self._merge_pool.apply_async(
                                     self._burn_data,
                                     (
-                                        self._graph.nodes[out_edge[1]]["footprint"],
-                                        self._graph.nodes[out_edge[1]]["data"],
+                                        self._graph.nodes[in_edge[0]]["footprint"],
+                                        self._graph.nodes[in_edge[0]]["data"],
                                         node["footprint"],
                                         in_data
                                     )
                                 ))
                             else:
-                                self._graph.nodes[out_edge[1]]["in_data"] = in_data
-                            self._graph.remove_edge(*out_edge)
+                                self._graph.nodes[in_edge[0]]["in_data"] = in_data
+                            self._graph.remove_edge(*in_edge)
 
 
             self._clean_graph()
@@ -386,7 +385,7 @@ class Raster(object):
                     function=self._compute_data,
                     in_data=None
                 )
-                self._graph.add_edge(to_compute_uid, to_produce_uid)
+                self._graph.add_edge(to_produce_uid, to_compute_uid)
                 multi_to_collect = self._to_collect_of_to_compute(to_compute)
 
                 for key, to_collect_primitive in zip(self._primitives.keys(), multi_to_collect):
@@ -401,7 +400,7 @@ class Raster(object):
                         future=None,
                         type="to_collect"
                     )
-                    self._graph.add_edge(to_collect_uid, to_compute_uid)
+                    self._graph.add_edge(to_compute_uid, to_collect_uid)
 
             new_query.collect.verbed = self._collect_data(new_query.collect.to_verb)
 
@@ -580,7 +579,7 @@ class CachedRaster(Raster):
                         function=self._read_cache_data,
                         in_data=None
                     )
-                    self._graph.add_edge(to_read_uid, to_produce_uid)
+                    self._graph.add_edge(to_produce_uid, to_read_uid)
 
                     # if the tile is not written, writing it
                     if not self._is_written(to_read):
@@ -590,7 +589,7 @@ class CachedRaster(Raster):
 
                         to_write_uid = self._get_graph_uid(to_write, "to_write")
                         if to_write_uid in self._graph.nodes():
-                            self._graph.add_edge(to_write_uid, to_read_uid)
+                            self._graph.add_edge(to_read_uid, to_write_uid)
                         else:
                             self._graph.add_node(
                                 to_write_uid,
@@ -603,7 +602,7 @@ class CachedRaster(Raster):
                                 function=self._write_cache_data,
                                 in_data=None
                             )
-                            self._graph.add_edge(to_write_uid, to_read_uid)
+                            self._graph.add_edge(to_read_uid, to_write_uid)
                             to_compute_multi = self._to_compute_of_to_write(to_write)
                             new_query.compute.to_verb.append(to_compute_multi)
 
@@ -619,7 +618,7 @@ class CachedRaster(Raster):
                                     function=self._compute_data,
                                     in_data=None
                                 )
-                                self._graph.add_edge(to_compute_uid, to_write_uid)
+                                self._graph.add_edge(to_write_uid, to_compute_uid)
                                 multi_to_collect = self._to_collect_of_to_compute(to_compute)
 
                                 for key, to_collect_primitive in zip(self._primitives.keys(), multi_to_collect):
@@ -634,7 +633,7 @@ class CachedRaster(Raster):
                                         future=None,
                                         type="to_collect"
                                     )
-                                    self._graph.add_edge(to_collect_uid, to_compute_uid)
+                                    self._graph.add_edge(to_compute_uid, to_collect_uid)
 
             new_query.collect.verbed = self._collect_data(new_query.collect.to_verb)
 
