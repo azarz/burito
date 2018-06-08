@@ -162,6 +162,7 @@ class Raster(object):
 
 
     def _burn_data(self, big_fp, to_fill_data, to_burn_fp, to_burn_data):
+        print(self.__class__.__name__, " burning ", threading.currentThread().getName())
         if len(to_fill_data.shape) == 3 and to_fill_data.shape[2] == 1:
             to_fill_data = to_fill_data.squeeze(axis=-1)
         to_fill_data[to_burn_fp.slice_in(big_fp, clip=True)] = to_burn_data[big_fp.slice_in(to_burn_fp, clip=True)]
@@ -233,10 +234,9 @@ class Raster(object):
                 # going as deep as possible
                 depth_node_ids = nx.dfs_postorder_nodes(self._graph.copy(), source=first_node_id)
                 for node_id in depth_node_ids:
-
                     node = self._graph.nodes[node_id]
 
-                    if len(self._graph.out_edges(node_id)) > 0 and node["type"] not in ("to_produce", "to_write"):
+                    if len(self._graph.out_edges(node_id)) > 0 and node["type"] != "to_produce":
                         continue
 
                     if node["type"] == "to_collect":
@@ -262,7 +262,6 @@ class Raster(object):
 
                     # if the deepest is to_write, writing the data
                     if node["type"] == "to_write" and node["future"] is None:
-
                         not_ready_list = [future for future in node["futures"] if not future.ready()]
                         if not not_ready_list:
                             if len(node["data"].shape) == 3 and node["data"].shape[2] == 1:
