@@ -10,7 +10,6 @@ import queue
 import threading
 import time
 from collections import defaultdict
-from collections import Counter
 
 from keras.models import load_model
 
@@ -172,7 +171,8 @@ class Raster(object):
 
     def _scheduler(self):
         print(self.__class__.__name__, " scheduler in ", threading.currentThread().getName())
-
+        num_pending = defaultdict(int)
+        num_put = defaultdict(int)
         while True:
             time.sleep(1e-2)
 
@@ -234,82 +234,98 @@ class Raster(object):
 
             # iterating through the graph
             for index, to_produce in enumerate(query.produce.to_verb):
-                # beginning at to_produce
-                first_node_id = self._get_graph_uid(to_produce, "to_produce" + str(self._to_produce_out_occurencies_dict[to_produce]))
-
-                # going as deep as possible
-                depth_node_ids = nx.dfs_postorder_nodes(self._graph.copy(), source=first_node_id)
-                for node_id in depth_node_ids:
-                    node = self._graph.nodes[node_id]
-
-                    if len(self._graph.out_edges(node_id)) > 0 and node["type"]:
+                if to_produce[1] in ("put", "pending"):
+                    continue
+                else:
+                    if num_pending[id(query)] + query.produce.verbed.qsize() >= query.produce.verbed.maxsize:
                         continue
+                    else:
+                        query.produce.to_verb[index] = (to_produce[0], "pending")
+                        num_pending[id(query)] += 1
+                        #TODO: update query.collect.verbed
 
-                    if node["type"] == "to_collect":
-                        continue
+                    # beginning at to_produce
+                    first_node_id = self._get_graph_uid(to_produce, "to_produce" + str(self._to_produce_out_occurencies_dict[to_produce]))
 
-                    # if the deepest is to_produce, updating produced
-                    if index == 0 and node["type"] == "to_produce":
-                        not_ready_list = [future for future in node["futures"] if not future.ready()]
-                        if not not_ready_list:
-                            try:
+                    # going as deep as possible
+                    depth_node_ids = nx.dfs_postorder_nodes(self._graph.copy(), source=first_node_id)
+                    for node_id in depth_node_ids:
+                        node = self._graph.nodes[node_id]
+
+                        if len(self._graph.out_edges(node_id)) > 0 and node["type"]:
+                            continue
+
+                        if node["type"] == "to_collect":
+                            continue
+
+                        # if the deepest is to_produce, updating produced
+                        if index == 0 and node["type"] == "to_produce":
+                            not_ready_list = [future for future in node["futures"] if not future.ready()]
+                            if not not_ready_list:
+
                                 if len(node["data"].shape) == 3 and node["data"].shape[2] == 1:
                                     node["data"] = node["data"].squeeze(axis=-1)
                                 query.produce.verbed.put(node["data"].astype(self._dtype), timeout=1e-2)
-                                query.produce.to_verb.pop(0)
+                                query.produce.to_verb[0] = (to_produce[0], "put")
+
                                 self._to_produce_out_occurencies_dict[to_produce] += 1
                                 self._graph.remove_node(node_id)
-                            except queue.Full:
-                                continue
-                        continue
 
-                    if node["type"] == "to_produce":
-                        continue
+                                num_pending[id(query)] -= 1
+                                num_put[id(query)] += 1
+                                while num_put[id(query)] != query.produce.verbed.qsize():
+                                    query.produce.to_verb.pop(0)
+                                    num_put[id(query)] -= 1
 
-                    # if the deepest is to_write, writing the data
-                    if node["type"] == "to_write" and node["future"] is None:
-                        not_ready_list = [future for future in node["futures"] if not future.ready()]
-                        if not not_ready_list:
-                            if len(node["data"].shape) == 3 and node["data"].shape[2] == 1:
-                                node["data"] = node["data"].squeeze(axis=-1)
+                            continue
 
+                        if node["type"] == "to_produce":
+                            continue
+
+                        # if the deepest is to_write, writing the data
+                        if node["type"] == "to_write" and node["future"] is None:
+                            not_ready_list = [future for future in node["futures"] if not future.ready()]
+                            if not not_ready_list:
+                                if len(node["data"].shape) == 3 and node["data"].shape[2] == 1:
+                                    node["data"] = node["data"].squeeze(axis=-1)
+
+                                node["future"] = node["pool"].apply_async(
+                                    node["function"],
+                                    (
+                                        node["footprint"],
+                                        node["data"].astype(self._dtype)
+                                    )
+                                )
+                            continue
+
+                        in_edges = self._graph.copy().in_edges(node_id)
+
+                        if node["future"] is None:
                             node["future"] = node["pool"].apply_async(
                                 node["function"],
                                 (
                                     node["footprint"],
-                                    node["data"].astype(self._dtype)
+                                    node["in_data"]
                                 )
                             )
-                        continue
 
-                    in_edges = self._graph.copy().in_edges(node_id)
+                        elif node["future"].ready():
+                            in_data = node["future"].get()
 
-                    if node["future"] is None:
-                        node["future"] = node["pool"].apply_async(
-                            node["function"],
-                            (
-                                node["footprint"],
-                                node["in_data"]
-                            )
-                        )
-
-                    elif node["future"].ready():
-                        in_data = node["future"].get()
-
-                        for in_edge in in_edges:
-                            if self._graph.nodes[in_edge[0]]["type"] in ("to_produce", "to_write"):
-                                self._graph.nodes[in_edge[0]]["futures"].append(self._merge_pool.apply_async(
-                                    self._burn_data,
-                                    (
-                                        self._graph.nodes[in_edge[0]]["footprint"],
-                                        self._graph.nodes[in_edge[0]]["data"],
-                                        node["footprint"],
-                                        in_data
-                                    )
-                                ))
-                            else:
-                                self._graph.nodes[in_edge[0]]["in_data"] = in_data
-                            self._graph.remove_edge(*in_edge)
+                            for in_edge in in_edges:
+                                if self._graph.nodes[in_edge[0]]["type"] in ("to_produce", "to_write"):
+                                    self._graph.nodes[in_edge[0]]["futures"].append(self._merge_pool.apply_async(
+                                        self._burn_data,
+                                        (
+                                            self._graph.nodes[in_edge[0]]["footprint"],
+                                            self._graph.nodes[in_edge[0]]["data"],
+                                            node["footprint"],
+                                            in_data
+                                        )
+                                    ))
+                                else:
+                                    self._graph.nodes[in_edge[0]]["in_data"] = in_data
+                                self._graph.remove_edge(*in_edge)
 
 
             self._clean_graph()
@@ -367,17 +383,17 @@ class Raster(object):
             new_query.collect.to_verb = {key: [] for key in self._primitives.keys()}
 
             for to_produce in new_query.produce.to_verb:
-                to_produce_uid = self._get_graph_uid(to_produce, "to_produce" + str(self._to_produce_in_occurencies_dict[to_produce]))
-                self._to_produce_in_occurencies_dict[to_produce] += 1
+                to_produce_uid = self._get_graph_uid(to_produce[0], "to_produce" + str(self._to_produce_in_occurencies_dict[to_produce[0]]))
+                self._to_produce_in_occurencies_dict[to_produce[0]] += 1
                 self._graph.add_node(
                     to_produce_uid,
                     futures=[],
-                    footprint=to_produce,
-                    data=np.zeros(tuple(to_produce.shape) + (self._num_bands,)),
+                    footprint=to_produce[0],
+                    data=np.zeros(tuple(to_produce[0].shape) + (self._num_bands,)),
                     type="to_produce"
                 )
 
-                to_compute = to_produce
+                to_compute = to_produce[0]
 
                 to_compute_uid = self._get_graph_uid(to_compute, "to_compute")
 
@@ -407,17 +423,19 @@ class Raster(object):
                     )
                     self._graph.add_edge(to_compute_uid, to_collect_uid)
 
+            # TODO: don't do that
             new_query.collect.verbed = self._collect_data(new_query.collect.to_verb)
 
 
-    def get_multi_data_queue(self, fp_iterable, queue_size=5):
+    def get_multi_data_queue(self, fp_iterable, queue_size=5, query=None):
         """
         returns a queue (could be generator) from a fp_iterable
         """
-        query = FullQuery(queue_size)
-        to_produce = list(fp_iterable.copy())
+        if query is None:
+            query = FullQuery(queue_size)
+        to_produce = [(fp, "sleeping") for fp in fp_iterable.copy()]
 
-        query.produce.to_verb = to_produce
+        query.produce.to_verb += to_produce
 
         self._queries.append(query)
         self._new_queries.append(query)
@@ -558,17 +576,17 @@ class CachedRaster(Raster):
             new_query.collect.to_verb = {key: [] for key in self._primitives.keys()}
 
             for to_produce in new_query.produce.to_verb:
-                to_produce_uid = self._get_graph_uid(to_produce, "to_produce" + str(self._to_produce_in_occurencies_dict[to_produce]))
-                self._to_produce_in_occurencies_dict[to_produce] += 1
+                to_produce_uid = self._get_graph_uid(to_produce[0], "to_produce" + str(self._to_produce_in_occurencies_dict[to_produce[0]]))
+                self._to_produce_in_occurencies_dict[to_produce[0]] += 1
                 self._graph.add_node(
                     to_produce_uid,
-                    footprint=to_produce,
+                    footprint=to_produce[0],
                     futures=[],
-                    data=np.zeros(tuple(to_produce.shape) + (self._num_bands,)),
+                    data=np.zeros(tuple(to_produce[0].shape) + (self._num_bands,)),
                     type="to_produce",
                     in_data=None
                 )
-                to_read_tiles = self._to_read_of_to_produce(to_produce)
+                to_read_tiles = self._to_read_of_to_produce(to_produce[0])
                 new_query.read.to_verb.append(to_read_tiles)
 
                 for to_read in to_read_tiles:
