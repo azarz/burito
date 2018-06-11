@@ -10,6 +10,7 @@ import queue
 import threading
 import time
 from collections import defaultdict
+from collections import Counter
 
 from keras.models import load_model
 
@@ -51,7 +52,6 @@ DIR_NAMES = {
 }
 
 CACHE_DIR = "./.cache"
-
 
 def output_fp_to_input_fp(fp, scale, rsize):
     """
@@ -202,28 +202,34 @@ class Raster(object):
                     one_is_empty = True
 
 
-            # if they are all full
+            # if they are all not empty
             if not one_is_empty:
                 # getting all the collected data
                 collected_data = []
                 for collected_primitive in query.collect.verbed.keys():
-                    collected_data.append(query.collect.verbed[collected_primitive].get())
+                    collected_data.append(query.collect.verbed[collected_primitive].get(block=False))
 
                 # for each graph edge out of the collected, applying the asyncresult to the out node
                 for prim in self._primitives.keys():
-                    collect_in_edges = (self._graph.copy().in_edges(self._get_graph_uid(query.collect.to_verb[prim][0], "to_collect")))
+                    try:
+                        collect_in_edges = (self._graph.copy().in_edges(self._get_graph_uid(query.collect.to_verb[prim][0], "to_collect")))
 
-                    for edge in collect_in_edges:
-                        self._graph.nodes[edge[0]]["future"] = self._computation_pool.apply_async(
-                            self._compute_data,
-                            (
-                                self._graph.nodes[edge[0]]["footprint"],
-                                *collected_data
+                        for edge in collect_in_edges:
+                            compute_node = self._graph.nodes[edge[0]]
+                            compute_node["future"] = self._computation_pool.apply_async(
+                                self._compute_data,
+                                (
+                                    self._graph.nodes[edge[0]]["footprint"],
+                                    *collected_data
+                                )
                             )
-                        )
-                        self._graph.remove_edge(*edge)
-
-                    query.collect.to_verb[prim].pop(0)
+                            compute_out_edges = self._graph.copy().out_edges(edge[0])
+                            for to_remove_edge in compute_out_edges:
+                                self._graph.remove_edge(*to_remove_edge)
+                    except nx.NetworkXError:
+                        pass
+                    finally:
+                        query.collect.to_verb[prim].pop(0)
                 continue
 
             # iterating through the graph
@@ -392,7 +398,7 @@ class Raster(object):
                         new_query.collect.to_verb[key].append(to_collect_primitive)
 
                 for to_collect in multi_to_collect:
-                    to_collect_uid = self._get_graph_uid(to_collect, "to_collect")
+                    to_collect_uid = self._get_graph_uid(to_collect, "to_collect" + str(id(new_query)))
                     self._graph.add_node(
                         to_collect_uid,
                         footprints=to_collect,
@@ -625,7 +631,7 @@ class CachedRaster(Raster):
                                         new_query.collect.to_verb[key].append(to_collect_primitive)
 
                                 for to_collect in multi_to_collect:
-                                    to_collect_uid = self._get_graph_uid(to_collect, "to_collect")
+                                    to_collect_uid = self._get_graph_uid(to_collect, "to_collect" + str(id(new_query)))
                                     self._graph.add_node(
                                         to_collect_uid,
                                         footprints=to_collect,
