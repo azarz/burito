@@ -200,18 +200,19 @@ class Raster(object):
             if query.produce.verbed.full():
                 continue
 
-            while query.produce.verbed.qsize() + self._num_pending[id(query)]:
+            while query.produce.verbed.qsize() + self._num_pending[id(query)] < query.produce.verbed.maxsize:
                 to_produce_available = [to_produce[0] for to_produce in query.produce.to_verb if to_produce[1] == "sleeping"][0]
                 to_produce_available_id = self._get_graph_uid(to_produce_available, "to_produce" + str(self._to_produce_collect_occurencies_dict[to_produce_available]))
                 depth_node_ids = nx.dfs_postorder_nodes(self._graph.copy(), source=to_produce_available_id)
 
                 for node_id in depth_node_ids:
                     node = self._graph.nodes[node_id]
-                    if node["type"] == "to_collect":
+                    if node["type"] == "to_collect" and node["footprint"] not in to_collect_batch[node["primitive"]]:
                         to_collect_batch[node["primitive"]].append(node["footprint"])
 
                 query.produce.to_verb[query.produce.to_verb.index((to_produce_available, "sleeping"))] = (to_produce_available, "pending")
 
+                self._num_pending[id(query)] += 1
                 self._to_produce_collect_occurencies_dict[to_produce_available] += 1
 
             # testing if at least 1 of the collected queues is empty (1 queue per primitive)
@@ -223,7 +224,7 @@ class Raster(object):
 
             prim = list(self._primitives.keys())[0]
 
-            # if they are all not empty and can be collected without sturation
+            # if they are all not empty and can be collected without saturation
             if not one_is_empty and query.collect.to_verb[prim][0] in to_collect_batch[prim]:
                 # getting all the collected data
                 collected_data = []
@@ -259,8 +260,7 @@ class Raster(object):
                     continue
                 else:
                     # beginning at to_produce
-                    first_node_id = self._get_graph_uid(to_produce, "to_produce" + str(self._to_produce_out_occurencies_dict[to_produce]))
-
+                    first_node_id = self._get_graph_uid(to_produce[0], "to_produce" + str(self._to_produce_out_occurencies_dict[to_produce[0]]))
                     # going as deep as possible
                     depth_node_ids = nx.dfs_postorder_nodes(self._graph.copy(), source=first_node_id)
                     for node_id in depth_node_ids:
@@ -282,7 +282,7 @@ class Raster(object):
                                 query.produce.verbed.put(node["data"].astype(self._dtype), timeout=1e-2)
                                 query.produce.to_verb[0] = (to_produce[0], "put")
 
-                                self._to_produce_out_occurencies_dict[to_produce] += 1
+                                self._to_produce_out_occurencies_dict[to_produce[0]] += 1
                                 self._graph.remove_node(node_id)
 
                                 self._num_pending[id(query)] -= 1
@@ -347,15 +347,15 @@ class Raster(object):
 
 
     def _clean_graph(self):
-        # Used to keep duploicates in to_produce
+        # Used to keep duplicates in to_produce
         to_produce_occurencies_dict = self._to_produce_out_occurencies_dict.copy()
 
         to_remove = list(nx.isolates(self._graph))
 
         for query in self._queries:
             for to_produce in query.produce.to_verb:
-                to_produce_uid = self._get_graph_uid(to_produce, "to_produce" + str(to_produce_occurencies_dict[to_produce]))
-                to_produce_occurencies_dict[to_produce] += 1
+                to_produce_uid = self._get_graph_uid(to_produce[0], "to_produce" + str(to_produce_occurencies_dict[to_produce[0]]))
+                to_produce_occurencies_dict[to_produce[0]] += 1
                 while to_produce_uid in to_remove:
                     to_remove.remove(to_produce_uid)
 
@@ -431,9 +431,10 @@ class Raster(object):
                     to_collect_uid = self._get_graph_uid(multi_to_collect[key], "to_collect" + key + str(id(new_query)))
                     self._graph.add_node(
                         to_collect_uid,
-                        footprints=multi_to_collect[key],
+                        footprint=multi_to_collect[key],
                         future=None,
-                        type="to_collect"
+                        type="to_collect",
+                        primitive=key
                     )
                     self._graph.add_edge(to_compute_uid, to_collect_uid)
 
@@ -665,7 +666,7 @@ class CachedRaster(Raster):
                                     to_collect_uid = self._get_graph_uid(multi_to_collect[key], "to_collect" + key + str(id(new_query)))
                                     self._graph.add_node(
                                         to_collect_uid,
-                                        footprints=multi_to_collect[key],
+                                        footprint=multi_to_collect[key],
                                         future=None,
                                         type="to_collect",
                                         primitive=key
@@ -743,6 +744,7 @@ class ResampledRaster(CachedRaster):
             result = queue.Queue()
             for _ in to_collect["primitive"]:
                 result.put([])
+
             return {"primitive": result}
 
         def to_collect_of_to_compute(fp):
