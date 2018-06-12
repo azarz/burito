@@ -245,7 +245,10 @@ class Raster(object):
                 # for each graph edge out of the collected, applying the asyncresult to the out node
                 for prim in self._primitives.keys():
                     try:
-                        collect_in_edges = (self._graph.copy().in_edges(self._get_graph_uid(query.collect.to_verb[prim][0], "to_collect" + prim + str(id(query)))))
+                        collect_in_edges = self._graph.copy().in_edges(self._get_graph_uid(
+                            query.collect.to_verb[prim][0],
+                            "to_collect" + prim + str(id(query))
+                        ))
 
                         for edge in collect_in_edges:
                             compute_node = self._graph.nodes[edge[0]]
