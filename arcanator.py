@@ -175,6 +175,7 @@ class Raster(object):
 
     def _scheduler(self):
         print(self.__class__.__name__, " scheduler in ", threading.currentThread().getName())
+        # list of available and produced to_collect footprints
         to_collect_batch = {key: [] for key in self._primitives.keys()}
         while True:
             time.sleep(1e-2)
@@ -199,16 +200,27 @@ class Raster(object):
             if query.produce.verbed.full():
                 continue
 
+            # detecting which footprints to collect from the queue + pending
+            # while there is space
             while query.produce.verbed.qsize() + self._num_pending[id(query)] < query.produce.verbed.maxsize:
+                # getting the first sleeping to_produce
                 to_produce_available = [to_produce[0] for to_produce in query.produce.to_verb if to_produce[1] == "sleeping"][0]
-                to_produce_available_id = self._get_graph_uid(to_produce_available, "to_produce" + str(self._to_produce_collect_occurencies_dict[to_produce_available]))
+                # getting its id in the graph
+                to_produce_available_id = self._get_graph_uid(
+                    to_produce_available,
+                    "to_produce" + str(self._to_produce_collect_occurencies_dict[to_produce_available])
+                )
+
+                # getting the ids of the depth firsrt search
                 depth_node_ids = nx.dfs_postorder_nodes(self._graph.copy(), source=to_produce_available_id)
 
                 for node_id in depth_node_ids:
                     node = self._graph.nodes[node_id]
+                    # for each to collect, appending the footprint to the batch
                     if node["type"] == "to_collect" and node["footprint"] not in to_collect_batch[node["primitive"]]:
                         to_collect_batch[node["primitive"]].append(node["footprint"])
 
+                # updating the to_produce status
                 query.produce.to_verb[query.produce.to_verb.index((to_produce_available, "sleeping"))] = (to_produce_available, "pending")
 
                 self._num_pending[id(query)] += 1
@@ -268,6 +280,7 @@ class Raster(object):
                         if len(self._graph.out_edges(node_id)) > 0:
                             continue
 
+                        # should not happen, but not fata if happens
                         if node["type"] == "to_collect":
                             continue
 
@@ -288,6 +301,7 @@ class Raster(object):
 
                             continue
 
+                        # skipping the ready to_produce that are not at index 0
                         if node["type"] == "to_produce":
                             continue
 
@@ -347,6 +361,7 @@ class Raster(object):
 
         to_remove = list(nx.isolates(self._graph))
 
+        # not removing the orphan to_produce, they are removed when consumed
         for query in self._queries:
             for to_produce in query.produce.to_verb:
                 to_produce_uid = self._get_graph_uid(to_produce[0], "to_produce" + str(to_produce_occurencies_dict[to_produce[0]]))
@@ -381,11 +396,11 @@ class Raster(object):
             print(self.__class__.__name__, " updating graph ", threading.currentThread().getName())
             new_query = self._new_queries.pop(0)
 
-            # [
-            #    [to_collect_p1_1, ..., to_collect_p1_n],
+            # {
+            #    "p1": [to_collect_p1_1, ..., to_collect_p1_n],
             #    ...,
-            #    [to_collect_pp_1, ..., to_collect_pp_n]
-            # ]
+            #    "pp": [to_collect_pp_1, ..., to_collect_pp_n]
+            # }
             # with p # of primitives and n # of to_compute fps
 
             # initializing to_collect dictionnary
