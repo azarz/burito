@@ -109,13 +109,18 @@ class Raster(object):
         # Used to keep duplicates in to_produce
         self._to_produce_in_occurencies_dict = defaultdict(int)
         self._to_produce_out_occurencies_dict = defaultdict(int)
+        self._to_produce_collect_occurencies_dict = defaultdict(int)
+
+        # Used to track the number of pending tasks
+        self._num_pending = defaultdict(int)
+        self._num_put = defaultdict(int)
 
 
     def _pressure_ratio(self, query):
         """
         defines a pressure ration of a query: lesser values -> emptier query
         """
-        num = query.produce.verbed.qsize() + len(query.produce.staging)
+        num = query.produce.verbed.qsize() + self._num_pending[id(query)]
         den = query.produce.verbed.maxsize
         return num/den
 
@@ -171,8 +176,7 @@ class Raster(object):
 
     def _scheduler(self):
         print(self.__class__.__name__, " scheduler in ", threading.currentThread().getName())
-        num_pending = defaultdict(int)
-        num_put = defaultdict(int)
+        to_collect_batch = {key: [] for key in self._primitives.keys()}
         while True:
             time.sleep(1e-2)
 
@@ -187,12 +191,28 @@ class Raster(object):
             query = ordered_queries[0]
 
             if not query.produce.to_verb:
+                self._num_pending[query] = 0
+                self._num_put[query] = 0
                 self._queries.remove(query)
                 continue
 
             # if the emptiest query is full, waiting
             if query.produce.verbed.full():
                 continue
+
+            while query.produce.verbed.qsize() + self._num_pending[id(query)]:
+                to_produce_available = [to_produce[0] for to_produce in query.produce.to_verb if to_produce[1] == "sleeping"][0]
+                to_produce_available_id = self._get_graph_uid(to_produce_available, "to_produce" + str(self._to_produce_collect_occurencies_dict[to_produce_available]))
+                depth_node_ids = nx.dfs_postorder_nodes(self._graph.copy(), source=to_produce_available_id)
+
+                for node_id in depth_node_ids:
+                    node = self._graph.nodes[node_id]
+                    if node["type"] == "to_collect":
+                        to_collect_batch[node["primitive"]].append(node["footprint"])
+
+                query.produce.to_verb[query.produce.to_verb.index((to_produce_available, "sleeping"))] = (to_produce_available, "pending")
+
+                self._to_produce_collect_occurencies_dict[to_produce_available] += 1
 
             # testing if at least 1 of the collected queues is empty (1 queue per primitive)
             one_is_empty = False
@@ -201,9 +221,10 @@ class Raster(object):
                 if collected_primitive.empty():
                     one_is_empty = True
 
+            prim = list(self._primitives.keys())[0]
 
-            # if they are all not empty
-            if not one_is_empty:
+            # if they are all not empty and can be collected without sturation
+            if not one_is_empty and query.collect.to_verb[prim][0] in to_collect_batch[prim]:
                 # getting all the collected data
                 collected_data = []
                 for collected_primitive in query.collect.verbed.keys():
@@ -212,7 +233,7 @@ class Raster(object):
                 # for each graph edge out of the collected, applying the asyncresult to the out node
                 for prim in self._primitives.keys():
                     try:
-                        collect_in_edges = (self._graph.copy().in_edges(self._get_graph_uid(query.collect.to_verb[prim][0], "to_collect")))
+                        collect_in_edges = (self._graph.copy().in_edges(self._get_graph_uid(query.collect.to_verb[prim][0], "to_collect" + prim + str(id(query)))))
 
                         for edge in collect_in_edges:
                             compute_node = self._graph.nodes[edge[0]]
@@ -234,16 +255,9 @@ class Raster(object):
 
             # iterating through the graph
             for index, to_produce in enumerate(query.produce.to_verb):
-                if to_produce[1] in ("put", "pending"):
+                if to_produce[1] in ("put", "sleeping"):
                     continue
                 else:
-                    if num_pending[id(query)] + query.produce.verbed.qsize() >= query.produce.verbed.maxsize:
-                        continue
-                    else:
-                        query.produce.to_verb[index] = (to_produce[0], "pending")
-                        num_pending[id(query)] += 1
-                        #TODO: update query.collect.verbed
-
                     # beginning at to_produce
                     first_node_id = self._get_graph_uid(to_produce, "to_produce" + str(self._to_produce_out_occurencies_dict[to_produce]))
 
@@ -271,11 +285,11 @@ class Raster(object):
                                 self._to_produce_out_occurencies_dict[to_produce] += 1
                                 self._graph.remove_node(node_id)
 
-                                num_pending[id(query)] -= 1
-                                num_put[id(query)] += 1
-                                while num_put[id(query)] != query.produce.verbed.qsize():
+                                self._num_pending[id(query)] -= 1
+                                self._num_put[id(query)] += 1
+                                while self._num_put[id(query)] != query.produce.verbed.qsize():
                                     query.produce.to_verb.pop(0)
-                                    num_put[id(query)] -= 1
+                                    self._num_put[id(query)] -= 1
 
                             continue
 
@@ -350,12 +364,12 @@ class Raster(object):
 
 
     def _collect_data(self, to_collect):
-        # in: [
-        #    [to_collect_p1_1, ..., to_collect_p1_n],
+        # in: {
+        #    "prim_1": [to_collect_p1_1, ..., to_collect_p1_n],
         #    ...,
-        #    [to_collect_pp_1, ..., to_collect_pp_n]
-        #]
-        # out: [queue_1, queue_2, ..., queue_p]
+        #    'prim_p": [to_collect_pp_1, ..., to_collect_pp_n]
+        #}
+        # out: {"prim_1": queue_1, "prim_2": queue_2, ..., "prim_p": queue_p}
         print(self.__class__.__name__, " collecting ", threading.currentThread().getName())
         results = {}
         for primitive in self._primitives.keys():
@@ -409,30 +423,29 @@ class Raster(object):
                 self._graph.add_edge(to_produce_uid, to_compute_uid)
                 multi_to_collect = self._to_collect_of_to_compute(to_compute)
 
-                for key, to_collect_primitive in zip(self._primitives.keys(), multi_to_collect):
-                    if to_collect_primitive not in new_query.collect.to_verb[key]:
-                        new_query.collect.to_verb[key].append(to_collect_primitive)
+                for key in multi_to_collect:
+                    if multi_to_collect[key] not in new_query.collect.to_verb[key]:
+                        new_query.collect.to_verb[key].append(multi_to_collect[key])
 
-                for to_collect in multi_to_collect:
-                    to_collect_uid = self._get_graph_uid(to_collect, "to_collect" + str(id(new_query)))
+                for key in multi_to_collect:
+                    to_collect_uid = self._get_graph_uid(multi_to_collect[key], "to_collect" + key + str(id(new_query)))
                     self._graph.add_node(
                         to_collect_uid,
-                        footprints=to_collect,
+                        footprints=multi_to_collect[key],
                         future=None,
                         type="to_collect"
                     )
                     self._graph.add_edge(to_compute_uid, to_collect_uid)
 
-            # TODO: don't do that
             new_query.collect.verbed = self._collect_data(new_query.collect.to_verb)
 
 
-    def get_multi_data_queue(self, fp_iterable, queue_size=5, query=None):
+
+    def get_multi_data_queue(self, fp_iterable, queue_size=5):
         """
         returns a queue (could be generator) from a fp_iterable
         """
-        if query is None:
-            query = FullQuery(queue_size)
+        query = FullQuery(queue_size)
         to_produce = [(fp, "sleeping") for fp in fp_iterable.copy()]
 
         query.produce.to_verb += to_produce
@@ -644,17 +657,18 @@ class CachedRaster(Raster):
                                 self._graph.add_edge(to_write_uid, to_compute_uid)
                                 multi_to_collect = self._to_collect_of_to_compute(to_compute)
 
-                                for key, to_collect_primitive in zip(self._primitives.keys(), multi_to_collect):
-                                    if to_collect_primitive not in new_query.collect.to_verb[key]:
-                                        new_query.collect.to_verb[key].append(to_collect_primitive)
+                                for key in multi_to_collect:
+                                    if multi_to_collect[key] not in new_query.collect.to_verb[key]:
+                                        new_query.collect.to_verb[key].append(multi_to_collect[key])
 
-                                for to_collect in multi_to_collect:
-                                    to_collect_uid = self._get_graph_uid(to_collect, "to_collect" + str(id(new_query)))
+                                for key in multi_to_collect:
+                                    to_collect_uid = self._get_graph_uid(multi_to_collect[key], "to_collect" + key + str(id(new_query)))
                                     self._graph.add_node(
                                         to_collect_uid,
-                                        footprints=to_collect,
+                                        footprints=multi_to_collect[key],
                                         future=None,
-                                        type="to_collect"
+                                        type="to_collect",
+                                        primitive=key
                                     )
                                     self._graph.add_edge(to_compute_uid, to_collect_uid)
 
@@ -735,7 +749,7 @@ class ResampledRaster(CachedRaster):
             """
             mocks the behaviour of a tranformation
             """
-            return [fp]
+            return {"primitive": fp}
 
         super().__init__(full_fp, dtype, num_bands, nodata, wkt_origin,
                          compute_data, cache_dir, cache_fps, io_pool, computation_pool,
@@ -787,7 +801,7 @@ class Slopes(Raster):
             """
             computes to collect from to compute (dilation of 1)
             """
-            return [fp.dilate(1)]
+            return {"dsm": fp.dilate(1)}
 
         full_fp = dsm.fp
         primitives = {"dsm": dsm}
@@ -826,8 +840,8 @@ class HeatmapRaster(CachedRaster):
             Computes the to_collect data from model
             """
             rgba_tile = output_fp_to_input_fp(fp, 0.64, model.get_layer("rgb").input_shape[1])
-            dsm_tile = output_fp_to_input_fp(fp, 1.28, model.get_layer("slopes").input_shape[1])
-            return [rgba_tile, dsm_tile]
+            slope_tile = output_fp_to_input_fp(fp, 1.28, model.get_layer("slopes").input_shape[1])
+            return {"rgba": rgba_tile, "slopes": slope_tile}
 
         def compute_data(compute_fp, *data):
             """
