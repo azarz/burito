@@ -113,7 +113,6 @@ class Raster(object):
 
         # Used to track the number of pending tasks
         self._num_pending = defaultdict(int)
-        self._num_put = defaultdict(int)
 
 
     def _pressure_ratio(self, query):
@@ -256,7 +255,7 @@ class Raster(object):
 
             # iterating through the graph
             for index, to_produce in enumerate(query.produce.to_verb):
-                if to_produce[1] in ("put", "sleeping"):
+                if to_produce[1] == "sleeping":
                     continue
                 else:
                     # beginning at to_produce
@@ -266,7 +265,7 @@ class Raster(object):
                     for node_id in depth_node_ids:
                         node = self._graph.nodes[node_id]
 
-                        if len(self._graph.out_edges(node_id)) > 0 and node["type"]:
+                        if len(self._graph.out_edges(node_id)) > 0:
                             continue
 
                         if node["type"] == "to_collect":
@@ -280,16 +279,12 @@ class Raster(object):
                                 if len(node["data"].shape) == 3 and node["data"].shape[2] == 1:
                                     node["data"] = node["data"].squeeze(axis=-1)
                                 query.produce.verbed.put(node["data"].astype(self._dtype), timeout=1e-2)
-                                query.produce.to_verb[0] = (to_produce[0], "put")
+                                query.produce.to_verb.pop(0)
 
                                 self._to_produce_out_occurencies_dict[to_produce[0]] += 1
                                 self._graph.remove_node(node_id)
 
                                 self._num_pending[id(query)] -= 1
-                                self._num_put[id(query)] += 1
-                                while self._num_put[id(query)] != query.produce.verbed.qsize():
-                                    query.produce.to_verb.pop(0)
-                                    self._num_put[id(query)] -= 1
 
                             continue
 
