@@ -219,7 +219,7 @@ class Raster(object):
                                 self._compute_data,
                                 (
                                     self._graph.nodes[edge[0]]["footprint"],
-                                    *collected_dat
+                                    *collected_data
                                 )
                             )
                             compute_out_edges = self._graph.copy().out_edges(edge[0])
