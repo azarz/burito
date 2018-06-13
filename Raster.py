@@ -49,7 +49,8 @@ class Raster(object):
                  io_pool,
                  computation_pool,
                  primitives,
-                 to_collect_of_to_compute):
+                 to_collect_of_to_compute,
+                 computation_tiles = None):
 
         self._full_fp = footprint
         self._compute_data = computation_function
@@ -61,6 +62,8 @@ class Raster(object):
         self._computation_pool = computation_pool
         self._primitives = primitives
         self._to_collect_of_to_compute = to_collect_of_to_compute
+
+        self._computation_tiles = computation_tiles
 
         self._queries = []
         self._new_queries = []
@@ -376,6 +379,14 @@ class Raster(object):
             results[primitive] = self._primitives[primitive].get_multi_data_queue(to_collect[primitive])
         return results
 
+    def _to_compute_of_to_produce(self, fp):
+        to_compute_list = []
+        for computation_tile in self._computation_tiles.flat:
+            if fp.share_area(computation_tile):
+                to_compute_list.append(computation_tile)
+
+        return to_compute_list
+
 
     def _update_graph_from_queries(self):
         """
@@ -407,36 +418,40 @@ class Raster(object):
                     type="to_produce"
                 )
 
-                to_compute = to_produce[0]
+                if isinstance(self._computation_tiles, np.ndarray):
+                    multi_to_compute = self._to_compute_of_to_produce(to_produce[0])
+                else:
+                    multi_to_compute = [to_produce[0]]
 
-                to_compute_uid = _get_graph_uid(to_compute, "to_compute")
+                for to_compute in multi_to_compute:
+                    to_compute_uid = _get_graph_uid(to_compute, "to_compute")
 
-                self._graph.add_node(
-                    to_compute_uid,
-                    footprint=to_compute,
-                    future=None,
-                    type="to_compute",
-                    pool=self._computation_pool,
-                    function=self._compute_data,
-                    in_data=None
-                )
-                self._graph.add_edge(to_produce_uid, to_compute_uid)
-                multi_to_collect = self._to_collect_of_to_compute(to_compute)
-
-                for key in multi_to_collect:
-                    if multi_to_collect[key] not in new_query.to_collect[key]:
-                        new_query.to_collect[key].append(multi_to_collect[key])
-
-                for key in multi_to_collect:
-                    to_collect_uid = _get_graph_uid(multi_to_collect[key], "to_collect" + key + str(id(new_query)))
                     self._graph.add_node(
-                        to_collect_uid,
-                        footprint=multi_to_collect[key],
+                        to_compute_uid,
+                        footprint=to_compute,
                         future=None,
-                        type="to_collect",
-                        primitive=key
+                        type="to_compute",
+                        pool=self._computation_pool,
+                        function=self._compute_data,
+                        in_data=None
                     )
-                    self._graph.add_edge(to_compute_uid, to_collect_uid)
+                    self._graph.add_edge(to_produce_uid, to_compute_uid)
+                    multi_to_collect = self._to_collect_of_to_compute(to_compute)
+
+                    for key in multi_to_collect:
+                        if multi_to_collect[key] not in new_query.to_collect[key]:
+                            new_query.to_collect[key].append(multi_to_collect[key])
+
+                    for key in multi_to_collect:
+                        to_collect_uid = _get_graph_uid(multi_to_collect[key], "to_collect" + key + str(id(new_query)))
+                        self._graph.add_node(
+                            to_collect_uid,
+                            footprint=multi_to_collect[key],
+                            future=None,
+                            type="to_collect",
+                            primitive=key
+                        )
+                        self._graph.add_edge(to_compute_uid, to_collect_uid)
 
             new_query.collected = self._collect_data(new_query.to_collect)
 
