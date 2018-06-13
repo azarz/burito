@@ -11,7 +11,6 @@ class QueryPart(object):
     def __init__(self, qsize=5):
         self.to_verb = []
         self.verbed = queue.Queue(qsize)
-        self.staging = []
 
 
 class FullQuery(object):

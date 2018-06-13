@@ -359,6 +359,9 @@ class Raster(object):
 
 
     def _clean_graph(self):
+        """
+        removes the graph's orphans
+        """
         # Used to keep duplicates in to_produce
         to_produce_occurencies_dict = self._to_produce_out_occurencies_dict.copy()
 
@@ -377,12 +380,15 @@ class Raster(object):
 
 
     def _collect_data(self, to_collect):
-        # in: {
-        #    "prim_1": [to_collect_p1_1, ..., to_collect_p1_n],
-        #    ...,
-        #    'prim_p": [to_collect_pp_1, ..., to_collect_pp_n]
-        #}
-        # out: {"prim_1": queue_1, "prim_2": queue_2, ..., "prim_p": queue_p}
+        """
+        collects data from primitives
+        in: {
+           "prim_1": [to_collect_p1_1, ..., to_collect_p1_n],
+           ...,
+           'prim_p": [to_collect_pp_1, ..., to_collect_pp_n]
+        }
+        out: {"prim_1": queue_1, "prim_2": queue_2, ..., "prim_p": queue_p}
+        """
         print(self.__class__.__name__, " collecting ", threading.currentThread().getName())
         results = {}
         for primitive in self._primitives.keys():
@@ -460,7 +466,7 @@ class Raster(object):
         returns a queue (could be generator) from a fp_iterable
         """
         query = FullQuery(queue_size)
-        to_produce = [(fp, "sleeping") for fp in fp_iterable.copy()]
+        to_produce = [(fp, "sleeping") for fp in list(fp_iterable)]
 
         query.produce.to_verb += to_produce
 
@@ -549,6 +555,9 @@ class CachedRaster(Raster):
 
 
     def _read_cache_data(self, cache_tile, _placeholder=None):
+        """
+        reads cache data
+        """
         print(self.__class__.__name__, " reading ", threading.currentThread().getName())
         filepath = self._get_cache_tile_path(cache_tile)
 
@@ -564,6 +573,9 @@ class CachedRaster(Raster):
 
 
     def _write_cache_data(self, cache_tile, data):
+        """
+        writes cache data
+        """
         print(self.__class__.__name__, " writing ", threading.currentThread().getName())
         filepath = self._get_cache_tile_path(cache_tile)
         if not hasattr(self._thread_storage, "ds"):
@@ -731,7 +743,7 @@ class ResampledRaster(CachedRaster):
         computation_pool = mp.pool.ThreadPool()
         io_pool = mp.pool.ThreadPool()
 
-        def compute_data(compute_fp, *data):
+        def compute_data(compute_fp, *data): #*prim_footprints?
             """
             resampled raster compted data when collecting. this is a particular case
             """
@@ -799,13 +811,13 @@ class Slopes(Raster):
             arru = ndi.maximum_filter(arr, None, kernel) - arr
             arru = np.arctan(arru / self.pxsizex)
             arru = arru / np.pi * 180.
-            arru[nodata_mask] = 0
+            arru[nodata_mask] = self._nodata
             arru = arru[1:-1, 1:-1]
 
             arrd = arr - ndi.minimum_filter(arr, None, kernel)
             arrd = np.arctan(arrd / self.pxsizex)
             arrd = arrd / np.pi * 180.
-            arrd[nodata_mask] = 0
+            arrd[nodata_mask] = self._nodata
             arrd = arrd[1:-1, 1:-1]
 
             arr = np.dstack([arrd, arru])
@@ -830,7 +842,7 @@ class Slopes(Raster):
                          dtype,
                          num_bands,
                          nodata,
-                         None,
+                         None, # dsm.wkt_origin
                          compute_data,
                          io_pool,
                          computation_pool,
@@ -864,6 +876,7 @@ class HeatmapRaster(CachedRaster):
             """
             print(">>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>")
             rgba_data, slope_data = data
+
             rgb_data = np.where((rgba_data[..., 3] == 255)[..., np.newaxis], rgba_data, 0)[..., 0:3]
             rgb = (rgb_data.astype('float32') - 127.5) / 127.5
 
@@ -914,12 +927,13 @@ def raster_factory(footprint,
                    computation_pool,
                    primitives,
                    to_collect_of_to_compute,
-                   to_compute_fps):
+                   to_compute_fps):#clé -> remplir dict
     """
     creates a raster from arguments
     """
 
     if cached:
+        assert cache_dir != None
         raster = CachedRaster(footprint,
                               dtype,
                               nbands,
@@ -948,8 +962,6 @@ def raster_factory(footprint,
                        )
 
     return raster
-
-
 
 
 
