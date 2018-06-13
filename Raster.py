@@ -138,6 +138,12 @@ class Raster(object):
             to_fill_data = to_fill_data.squeeze(axis=-1)
         to_fill_data[to_burn_fp.slice_in(big_fp, clip=True)] = to_burn_data[big_fp.slice_in(to_burn_fp, clip=True)]
 
+    def _merge_data(self, out_fp, out_data, in_fps, in_arrays):
+        if len(out_data.shape) == 3 and out_data.shape[2] == 1:
+            out_data = out_data.squeeze(axis=-1)
+        for to_burn_fp, to_burn_data in zip(in_fps, in_arrays):
+            out_data[to_burn_fp.slice_in(out_fp, clip=True)] = to_burn_data[out_fp.slice_in(to_burn_fp, clip=True)]
+
 
     def _scheduler(self):
         print(self.__class__.__name__, " scheduler in ", threading.currentThread().getName())
@@ -277,23 +283,6 @@ class Raster(object):
                         if node["type"] == "to_produce":
                             continue
 
-                        # if the deepest is to_write, writing the data
-                        if node["type"] == "to_merge" and node["future"] is None:
-                            not_ready_list = [future for future in node["futures"] if not future.ready()]
-                            if not not_ready_list:
-                                if len(node["data"].shape) == 3 and node["data"].shape[2] == 1:
-                                    node["data"] = node["data"].squeeze(axis=-1)
-
-                                node["future"] = node["pool"].apply_async(
-                                    node["function"],
-                                    (
-                                        node["footprint"],
-                                        node["data"].astype(self._dtype)
-                                    )
-                                )
-                                threadPoolTaskCounter[id(node["pool"])] += 1
-                            continue
-
                         in_edges = self._graph.copy().in_edges(node_id)
 
                         if node["future"] is None:
@@ -311,8 +300,8 @@ class Raster(object):
                             threadPoolTaskCounter[id(node["pool"])] -= 1
 
                             for in_edge in in_edges:
-                                if self._graph.nodes[in_edge[0]]["type"] in ("to_produce", "to_merge"):
-                                    self._graph.nodes[in_edge[0]]["futures"].append(self._merge_pool.apply_async(
+                                if self._graph.nodes[in_edge[0]]["type"] == "to_produce":
+                                    self._graph.nodes[in_edge[0]]["futures"].append(self._io_pool.apply_async(
                                         self._burn_data,
                                         (
                                             self._graph.nodes[in_edge[0]]["footprint"],
@@ -321,6 +310,9 @@ class Raster(object):
                                             in_data
                                         )
                                     ))
+                                elif self._graph.nodes[in_edge[0]]["type"] == "to_merge":
+                                    self._graph.nodes[in_edge[0]]["in_data"].append(in_data)
+                                    self._graph.nodes[in_edge[0]]["in_fp"].append(node["footprint"])
                                 else:
                                     self._graph.nodes[in_edge[0]]["in_data"] = in_data
                                 self._graph.remove_edge(*in_edge)
@@ -649,7 +641,8 @@ class CachedRaster(Raster):
                                 type="to_merge",
                                 pool=self._merge_pool,
                                 function=self._merge_data,
-                                in_data=None
+                                in_data=[],
+                                in_fp=[]
                             )
                             self._graph.add_edge(to_write_uid, to_merge_uid)
 
