@@ -22,7 +22,7 @@ from show_many_images import show_many_images
 from uids_of_paths import uids_of_paths
 from watcher import Watcher
 
-from Query import FullQuery
+from Query import Query
 
 CATEGORIES = (
     #0        1       2        3        4
@@ -51,6 +51,10 @@ DIR_NAMES = {
 }
 
 CACHE_DIR = "./.cache"
+
+g_io_pool = mp.pool.ThreadPool()
+g_cpu_pool = mp.pool.ThreadPool()
+g_gpu_pool = mp.pool.ThreadPool(1)
 
 def output_fp_to_input_fp(fp, scale, rsize):
     """
@@ -98,8 +102,6 @@ class Raster(object):
         self._scheduler_thread = threading.Thread(target=self._scheduler, daemon=True)
         self._scheduler_thread.start()
 
-        # self._computation_pool = mp.pool.ThreadPool()
-        # self._io_pool = mp.pool.ThreadPool()
         self._merge_pool = mp.pool.ThreadPool()
 
         self._thread_storage = threading.local()
@@ -119,8 +121,8 @@ class Raster(object):
         """
         defines a pressure ration of a query: lesser values -> emptier query
         """
-        num = query.produce.verbed.qsize() + self._num_pending[id(query)]
-        den = query.produce.verbed.maxsize
+        num = query.produced.qsize() + self._num_pending[id(query)]
+        den = query.produced.maxsize
         return num/den
 
     @property
@@ -190,21 +192,21 @@ class Raster(object):
             # getting the emptiest query
             query = ordered_queries[0]
 
-            if not query.produce.to_verb:
+            if not query.to_produce:
                 self._num_pending[query] = 0
                 self._num_put[query] = 0
                 self._queries.remove(query)
                 continue
 
             # if the emptiest query is full, waiting
-            if query.produce.verbed.full():
+            if query.produced.full():
                 continue
 
             # detecting which footprints to collect from the queue + pending
             # while there is space
-            while query.produce.verbed.qsize() + self._num_pending[id(query)] < query.produce.verbed.maxsize:
+            while query.produced.qsize() + self._num_pending[id(query)] < query.produced.maxsize:
                 # getting the first sleeping to_produce
-                to_produce_available = [to_produce[0] for to_produce in query.produce.to_verb if to_produce[1] == "sleeping"][0]
+                to_produce_available = [to_produce[0] for to_produce in query.to_produce if to_produce[1] == "sleeping"][0]
                 # getting its id in the graph
                 to_produce_available_id = self._get_graph_uid(
                     to_produce_available,
@@ -221,7 +223,7 @@ class Raster(object):
                         to_collect_batch[node["primitive"]].append(node["footprint"])
 
                 # updating the to_produce status
-                query.produce.to_verb[query.produce.to_verb.index((to_produce_available, "sleeping"))] = (to_produce_available, "pending")
+                query.to_produce[query.to_produce.index((to_produce_available, "sleeping"))] = (to_produce_available, "pending")
 
                 self._num_pending[id(query)] += 1
                 self._to_produce_collect_occurencies_dict[to_produce_available] += 1
@@ -229,24 +231,24 @@ class Raster(object):
             # testing if at least 1 of the collected queues is empty (1 queue per primitive)
             one_is_empty = False
             for primitive in self._primitives.keys():
-                collected_primitive = query.collect.verbed[primitive]
+                collected_primitive = query.collected[primitive]
                 if collected_primitive.empty():
                     one_is_empty = True
 
             prim = list(self._primitives.keys())[0]
 
             # if they are all not empty and can be collected without saturation
-            if not one_is_empty and query.collect.to_verb[prim][0] in to_collect_batch[prim]:
+            if not one_is_empty and query.to_collect[prim][0] in to_collect_batch[prim]:
                 # getting all the collected data
                 collected_data = []
-                for collected_primitive in query.collect.verbed.keys():
-                    collected_data.append(query.collect.verbed[collected_primitive].get(block=False))
+                for collected_primitive in query.collected.keys():
+                    collected_data.append(query.collected[collected_primitive].get(block=False))
 
                 # for each graph edge out of the collected, applying the asyncresult to the out node
                 for prim in self._primitives.keys():
                     try:
                         collect_in_edges = self._graph.copy().in_edges(self._get_graph_uid(
-                            query.collect.to_verb[prim][0],
+                            query.to_collect[prim][0],
                             "to_collect" + prim + str(id(query))
                         ))
 
@@ -265,11 +267,11 @@ class Raster(object):
                     except nx.NetworkXError:
                         pass
                     finally:
-                        query.collect.to_verb[prim].pop(0)
+                        query.to_collect[prim].pop(0)
                 continue
 
             # iterating through the graph
-            for index, to_produce in enumerate(query.produce.to_verb):
+            for index, to_produce in enumerate(query.to_produce):
                 if to_produce[1] == "sleeping":
                     continue
                 else:
@@ -294,8 +296,8 @@ class Raster(object):
 
                                 if len(node["data"].shape) == 3 and node["data"].shape[2] == 1:
                                     node["data"] = node["data"].squeeze(axis=-1)
-                                query.produce.verbed.put(node["data"].astype(self._dtype), timeout=1e-2)
-                                query.produce.to_verb.pop(0)
+                                query.produced.put(node["data"].astype(self._dtype), timeout=1e-2)
+                                query.to_produce.pop(0)
 
                                 self._to_produce_out_occurencies_dict[to_produce[0]] += 1
                                 self._graph.remove_node(node_id)
@@ -369,7 +371,7 @@ class Raster(object):
 
         # not removing the orphan to_produce, they are removed when consumed
         for query in self._queries:
-            for to_produce in query.produce.to_verb:
+            for to_produce in query.to_produce:
                 to_produce_uid = self._get_graph_uid(to_produce[0], "to_produce" + str(to_produce_occurencies_dict[to_produce[0]]))
                 to_produce_occurencies_dict[to_produce[0]] += 1
                 while to_produce_uid in to_remove:
@@ -413,9 +415,9 @@ class Raster(object):
             # with p # of primitives and n # of to_compute fps
 
             # initializing to_collect dictionnary
-            new_query.collect.to_verb = {key: [] for key in self._primitives.keys()}
+            new_query.to_collect = {key: [] for key in self._primitives.keys()}
 
-            for to_produce in new_query.produce.to_verb:
+            for to_produce in new_query.to_produce:
                 to_produce_uid = self._get_graph_uid(to_produce[0], "to_produce" + str(self._to_produce_in_occurencies_dict[to_produce[0]]))
                 self._to_produce_in_occurencies_dict[to_produce[0]] += 1
                 self._graph.add_node(
@@ -443,8 +445,8 @@ class Raster(object):
                 multi_to_collect = self._to_collect_of_to_compute(to_compute)
 
                 for key in multi_to_collect:
-                    if multi_to_collect[key] not in new_query.collect.to_verb[key]:
-                        new_query.collect.to_verb[key].append(multi_to_collect[key])
+                    if multi_to_collect[key] not in new_query.to_collect[key]:
+                        new_query.to_collect[key].append(multi_to_collect[key])
 
                 for key in multi_to_collect:
                     to_collect_uid = self._get_graph_uid(multi_to_collect[key], "to_collect" + key + str(id(new_query)))
@@ -457,7 +459,7 @@ class Raster(object):
                     )
                     self._graph.add_edge(to_compute_uid, to_collect_uid)
 
-            new_query.collect.verbed = self._collect_data(new_query.collect.to_verb)
+            new_query.collected = self._collect_data(new_query.to_collect)
 
 
 
@@ -465,21 +467,23 @@ class Raster(object):
         """
         returns a queue (could be generator) from a fp_iterable
         """
-        query = FullQuery(queue_size)
-        to_produce = [(fp, "sleeping") for fp in list(fp_iterable)]
+        fp_iterable = list(fp_iterable)
+        query = Query(queue_size)
+        to_produce = [(fp, "sleeping") for fp in fp_iterable]
 
-        query.produce.to_verb += to_produce
+        query.to_produce += to_produce
 
         self._queries.append(query)
         self._new_queries.append(query)
 
-        return query.produce.verbed
+        return query.produced
 
 
     def get_multi_data(self, fp_iterable, queue_size=5):
         """
         returns a  generator from a fp_iterable
         """
+        fp_iterable = list(fp_iterable)
         out_queue = self.get_multi_data_queue(fp_iterable, queue_size)
 
         def out_generator():
@@ -612,9 +616,9 @@ class CachedRaster(Raster):
             # with p # of primitives and n # of to_compute fps
 
             # initializing to_collect dictionnary
-            new_query.collect.to_verb = {key: [] for key in self._primitives.keys()}
+            new_query.to_collect = {key: [] for key in self._primitives.keys()}
 
-            for to_produce in new_query.produce.to_verb:
+            for to_produce in new_query.to_produce:
                 to_produce_uid = self._get_graph_uid(to_produce[0], "to_produce" + str(self._to_produce_in_occurencies_dict[to_produce[0]]))
                 self._to_produce_in_occurencies_dict[to_produce[0]] += 1
                 self._graph.add_node(
@@ -626,7 +630,6 @@ class CachedRaster(Raster):
                     in_data=None
                 )
                 to_read_tiles = self._to_read_of_to_produce(to_produce[0])
-                new_query.read.to_verb.append(to_read_tiles)
 
                 for to_read in to_read_tiles:
                     to_read_uid = self._get_graph_uid(to_read, "to_read" + str(self._to_read_in_occurencies_dict[to_read]))
@@ -647,8 +650,6 @@ class CachedRaster(Raster):
                     if not self._is_written(to_read):
                         to_write = to_read
 
-                        new_query.write.to_verb.append(to_write)
-
                         to_write_uid = self._get_graph_uid(to_write, "to_write")
                         if to_write_uid in self._graph.nodes():
                             self._graph.add_edge(to_read_uid, to_write_uid)
@@ -666,7 +667,6 @@ class CachedRaster(Raster):
                             )
                             self._graph.add_edge(to_read_uid, to_write_uid)
                             to_compute_multi = self._to_compute_of_to_write(to_write)
-                            new_query.compute.to_verb.append(to_compute_multi)
 
                             for to_compute in to_compute_multi:
                                 to_compute_uid = self._get_graph_uid(to_compute, "to_compute")
@@ -684,8 +684,8 @@ class CachedRaster(Raster):
                                 multi_to_collect = self._to_collect_of_to_compute(to_compute)
 
                                 for key in multi_to_collect:
-                                    if multi_to_collect[key] not in new_query.collect.to_verb[key]:
-                                        new_query.collect.to_verb[key].append(multi_to_collect[key])
+                                    if multi_to_collect[key] not in new_query.to_collect[key]:
+                                        new_query.to_collect[key].append(multi_to_collect[key])
 
                                 for key in multi_to_collect:
                                     to_collect_uid = self._get_graph_uid(multi_to_collect[key], "to_collect" + key + str(id(new_query)))
@@ -698,7 +698,7 @@ class CachedRaster(Raster):
                                     )
                                     self._graph.add_edge(to_compute_uid, to_collect_uid)
 
-            new_query.collect.verbed = self._collect_data(new_query.collect.to_verb)
+            new_query.collected = self._collect_data(new_query.to_collect)
 
 
     def _to_read_of_to_produce(self, fp):
@@ -740,9 +740,6 @@ class ResampledRaster(CachedRaster):
 
         primitives = {"primitive": raster}
 
-        computation_pool = mp.pool.ThreadPool()
-        io_pool = mp.pool.ThreadPool()
-
         def compute_data(compute_fp, *data): #*prim_footprints?
             """
             resampled raster compted data when collecting. this is a particular case
@@ -779,7 +776,7 @@ class ResampledRaster(CachedRaster):
             return {"primitive": fp}
 
         super().__init__(full_fp, dtype, num_bands, nodata, wkt_origin,
-                         compute_data, cache_dir, cache_fps, io_pool, computation_pool,
+                         compute_data, cache_dir, cache_fps, g_io_pool, g_cpu_pool,
                          primitives, to_collect_of_to_compute, cache_fps
                         )
 
@@ -835,8 +832,6 @@ class Slopes(Raster):
         nodata = dsm.nodata
         num_bands = 2
         dtype = "float32"
-        computation_pool = mp.pool.ThreadPool()
-        io_pool = mp.pool.ThreadPool()
 
         super().__init__(full_fp,
                          dtype,
@@ -844,8 +839,8 @@ class Slopes(Raster):
                          nodata,
                          None, # dsm.wkt_origin
                          compute_data,
-                         io_pool,
-                         computation_pool,
+                         g_io_pool,
+                         g_cpu_pool,
                          primitives,
                          to_collect_of_to_compute
                         )
@@ -902,11 +897,8 @@ class HeatmapRaster(CachedRaster):
 
         computation_tiles = full_fp.tile(np.asarray(model.outputs[0].shape[1:3]).T)
 
-        io_pool = mp.pool.ThreadPool()
-        computation_pool = mp.pool.ThreadPool(1)
-
         super().__init__(full_fp, dtype, num_bands, None, None,
-                         compute_data, cache_dir, cache_fps, io_pool, computation_pool,
+                         compute_data, cache_dir, cache_fps, g_io_pool, g_gpu_pool,
                          primitives, to_collect_of_to_compute, computation_tiles
                         )
 
@@ -1020,7 +1012,7 @@ def main():
 
     # rgba_out = resampled_rgba.get_multi_data(list(cache_tiles64.flat), 1)
     # slopes_out = slopes.get_multi_data(list(cache_tiles128.flat), 1)
-    hm_out = hmr.get_multi_data(cache_tiles64.flat, 1)
+    hm_out = hmr.get_multi_data(cache_tiles64.flat, 5)
 
     for display_fp in cache_tiles64.flat:
         try:
