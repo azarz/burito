@@ -233,63 +233,6 @@ class HeatmapRaster(CachedRaster):
 
 
 
-
-
-def raster_factory(footprint,
-                   dtype,
-                   nbands,
-                   nodata,
-                   srs,
-                   computation_function,
-                   cached,
-                   cache_dir,
-                   cache_fps,
-                   io_pool,
-                   computation_pool,
-                   primitives,
-                   to_collect_of_to_compute,
-                   to_compute_fps,
-                   merge_pool,
-                   merge_function):
-    """
-    creates a raster from arguments
-    """
-
-    if cached:
-        assert cache_dir != None
-        raster = CachedRaster(footprint,
-                              dtype,
-                              nbands,
-                              nodata,
-                              srs,
-                              computation_function,
-                              cache_dir,
-                              cache_fps,
-                              io_pool,
-                              computation_pool,
-                              primitives,
-                              to_collect_of_to_compute,
-                              to_compute_fps
-                             )
-    else:
-        raster = Raster(footprint,
-                        dtype,
-                        nbands,
-                        nodata,
-                        srs,
-                        computation_function,
-                        io_pool,
-                        computation_pool,
-                        primitives,
-                        to_collect_of_to_compute
-                       )
-
-    return raster
-
-
-
-
-
 def main():
     """
     main program, used for tests

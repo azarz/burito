@@ -278,7 +278,7 @@ class Raster(object):
                             continue
 
                         # if the deepest is to_write, writing the data
-                        if node["type"] == "to_write" and node["future"] is None:
+                        if node["type"] == "to_merge" and node["future"] is None:
                             not_ready_list = [future for future in node["futures"] if not future.ready()]
                             if not not_ready_list:
                                 if len(node["data"].shape) == 3 and node["data"].shape[2] == 1:
@@ -311,7 +311,7 @@ class Raster(object):
                             threadPoolTaskCounter[id(node["pool"])] -= 1
 
                             for in_edge in in_edges:
-                                if self._graph.nodes[in_edge[0]]["type"] in ("to_produce", "to_write"):
+                                if self._graph.nodes[in_edge[0]]["type"] in ("to_produce", "to_merge"):
                                     self._graph.nodes[in_edge[0]]["futures"].append(self._merge_pool.apply_async(
                                         self._burn_data,
                                         (
@@ -636,6 +636,24 @@ class CachedRaster(Raster):
                                 in_data=None
                             )
                             self._graph.add_edge(to_read_uid, to_write_uid)
+
+                            to_merge = to_write
+                            to_merge_uid = _get_graph_uid(to_write, "to_merge")
+
+                            self._graph.add_node(
+                                to_merge_uid,
+                                footprint=to_merge,
+                                future=None,
+                                futures=[],
+                                data=np.zeros(tuple(to_write.shape) + (self._num_bands,)),
+                                type="to_merge",
+                                pool=self._merge_pool,
+                                function=self._merge_data,
+                                in_data=None
+                            )
+                            self._graph.add_edge(to_write_uid, to_merge_uid)
+
+
                             to_compute_multi = self._to_compute_of_to_write(to_write)
 
                             for to_compute in to_compute_multi:
@@ -650,7 +668,7 @@ class CachedRaster(Raster):
                                     function=self._compute_data,
                                     in_data=None
                                 )
-                                self._graph.add_edge(to_write_uid, to_compute_uid)
+                                self._graph.add_edge(to_merge_uid, to_compute_uid)
                                 multi_to_collect = self._to_collect_of_to_compute(to_compute)
 
                                 for key in multi_to_collect:
@@ -689,3 +707,56 @@ class CachedRaster(Raster):
                 to_compute_list.append(computation_tile)
 
         return to_compute_list
+
+
+
+def raster_factory(footprint,
+                   dtype,
+                   nbands,
+                   nodata,
+                   srs,
+                   computation_function,
+                   cached,
+                   cache_dir,
+                   cache_fps,
+                   io_pool,
+                   computation_pool,
+                   primitives,
+                   to_collect_of_to_compute,
+                   to_compute_fps,
+                   merge_pool,
+                   merge_function):
+    """
+    creates a raster from arguments
+    """
+
+    if cached:
+        assert cache_dir != None
+        raster = CachedRaster(footprint,
+                              dtype,
+                              nbands,
+                              nodata,
+                              srs,
+                              computation_function,
+                              cache_dir,
+                              cache_fps,
+                              io_pool,
+                              computation_pool,
+                              primitives,
+                              to_collect_of_to_compute,
+                              to_compute_fps
+                             )
+    else:
+        raster = Raster(footprint,
+                        dtype,
+                        nbands,
+                        nodata,
+                        srs,
+                        computation_function,
+                        io_pool,
+                        computation_pool,
+                        primitives,
+                        to_collect_of_to_compute
+                       )
+
+    return raster
