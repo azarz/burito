@@ -143,6 +143,7 @@ class Raster(object):
             out_data = out_data.squeeze(axis=-1)
         for to_burn_fp, to_burn_data in zip(in_fps, in_arrays):
             out_data[to_burn_fp.slice_in(out_fp, clip=True)] = to_burn_data[out_fp.slice_in(to_burn_fp, clip=True)]
+        return out_data
 
 
     def _scheduler(self):
@@ -281,6 +282,19 @@ class Raster(object):
 
                         # skipping the ready to_produce that are not at index 0
                         if node["type"] == "to_produce":
+                            continue
+
+                        if node["type"] == "to_merge" and node["future"] is None:
+                            node["future"] = node["pool"].apply_async(
+                                node["function"],
+                                (
+                                    node["footprint"],
+                                    node["data"],
+                                    node["in_fp"],
+                                    node["in_data"]
+                                )
+                            )
+                            threadPoolTaskCounter[id(node["pool"])] += 1
                             continue
 
                         in_edges = self._graph.copy().in_edges(node_id)
@@ -620,8 +634,6 @@ class CachedRaster(Raster):
                                 to_write_uid,
                                 footprint=to_write,
                                 future=None,
-                                futures=[],
-                                data=np.zeros(tuple(to_write.shape) + (self._num_bands,)),
                                 type="to_write",
                                 pool=self._io_pool,
                                 function=self._write_cache_data,
