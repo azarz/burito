@@ -284,7 +284,7 @@ class Raster(object):
                             continue
 
                         if node["type"] == "to_merge" and node["future"] is None:
-                            if threadPoolTaskCounter[id(node["pool"])] >= node["pool"]._processes:
+                            if threadPoolTaskCounter[id(node["pool"])] < node["pool"]._processes:
                                 node["future"] = node["pool"].apply_async(
                                     node["function"],
                                     (
@@ -300,7 +300,7 @@ class Raster(object):
                         in_edges = self._graph.copy().in_edges(node_id)
 
                         if node["future"] is None:
-                            if threadPoolTaskCounter[id(node["pool"])] >= node["pool"]._processes:
+                            if threadPoolTaskCounter[id(node["pool"])] < node["pool"]._processes:
                                 node["future"] = node["pool"].apply_async(
                                     node["function"],
                                     (
