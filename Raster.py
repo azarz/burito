@@ -208,8 +208,7 @@ class Raster(object):
 
             prim = list(self._primitives.keys())[0]
 
-            too_many_tasks = (threadPoolTaskCounter[id(self._io_pool)] >= self._io_pool._processes
-                              and threadPoolTaskCounter[id(self._computation_pool)] >= self._computation_pool._processes)
+            too_many_tasks = threadPoolTaskCounter[id(self._computation_pool)] >= self._computation_pool._processes
             # if they are all not empty and can be collected without saturation
             if not one_is_empty and query.to_collect[prim][0] in to_collect_batch[prim] and not too_many_tasks:
                 # getting all the collected data
@@ -284,7 +283,7 @@ class Raster(object):
                         if node["type"] == "to_produce":
                             continue
 
-                        if node["type"] == "to_merge" and node["future"] is None:
+                        if node["type"] == "to_merge" and node["future"] is None and threadPoolTaskCounter[id(node["pool"])] >= node["pool"]._processes:
                             node["future"] = node["pool"].apply_async(
                                 node["function"],
                                 (
@@ -299,7 +298,7 @@ class Raster(object):
 
                         in_edges = self._graph.copy().in_edges(node_id)
 
-                        if node["future"] is None:
+                        if node["future"] is None and threadPoolTaskCounter[id(node["pool"])] >= node["pool"]._processes::
                             node["future"] = node["pool"].apply_async(
                                 node["function"],
                                 (
