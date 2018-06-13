@@ -105,11 +105,11 @@ class ResampledRaster(CachedRaster):
             return {"primitive": fp}
 
         super().__init__(full_fp, dtype, num_bands, nodata, wkt_origin,
-                         compute_data, cache_dir, cache_fps, g_io_pool, g_cpu_pool,
+                         resample_compute_data, cache_dir, cache_fps, g_io_pool, g_cpu_pool,
                          primitives, to_collect_of_to_compute, cache_fps
                         )
 
-        self._collect_data = collect_data
+        self._collect_data = resample_collect_data
 
 
 

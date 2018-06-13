@@ -15,6 +15,9 @@ import networkx as nx
 import buzzard as buzz
 
 from Query import Query
+from SingletonCounter import SingletonCounter
+
+threadPoolTaskCounter = SingletonCounter()
 
 def output_fp_to_input_fp(fp, scale, rsize):
     """
@@ -198,8 +201,10 @@ class Raster(object):
 
             prim = list(self._primitives.keys())[0]
 
+            too_many_tasks = (threadPoolTaskCounter[id(self._io_pool)] >= self._io_pool._processes
+                              and threadPoolTaskCounter[id(self._computation_pool)] >= self._computation_pool._processes)
             # if they are all not empty and can be collected without saturation
-            if not one_is_empty and query.to_collect[prim][0] in to_collect_batch[prim]:
+            if not one_is_empty and query.to_collect[prim][0] in to_collect_batch[prim] and not too_many_tasks:
                 # getting all the collected data
                 collected_data = []
                 for collected_primitive in query.collected.keys():
@@ -215,6 +220,7 @@ class Raster(object):
 
                         for edge in collect_in_edges:
                             compute_node = self._graph.nodes[edge[0]]
+                            threadPoolTaskCounter[id(self._computation_pool)] += 1
                             compute_node["future"] = self._computation_pool.apply_async(
                                 self._compute_data,
                                 (
@@ -300,6 +306,7 @@ class Raster(object):
 
                         elif node["future"].ready():
                             in_data = node["future"].get()
+                            threadPoolTaskCounter[id(node["pool"])] -= 1
 
                             for in_edge in in_edges:
                                 if self._graph.nodes[in_edge[0]]["type"] in ("to_produce", "to_write"):
