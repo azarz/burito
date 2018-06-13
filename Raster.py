@@ -283,30 +283,33 @@ class Raster(object):
                         if node["type"] == "to_produce":
                             continue
 
-                        if node["type"] == "to_merge" and node["future"] is None and threadPoolTaskCounter[id(node["pool"])] >= node["pool"]._processes:
-                            node["future"] = node["pool"].apply_async(
-                                node["function"],
-                                (
-                                    node["footprint"],
-                                    node["data"],
-                                    node["in_fp"],
-                                    node["in_data"]
+                        if node["type"] == "to_merge" and node["future"] is None:
+                            if threadPoolTaskCounter[id(node["pool"])] >= node["pool"]._processes:
+                                node["future"] = node["pool"].apply_async(
+                                    node["function"],
+                                    (
+                                        node["footprint"],
+                                        node["data"],
+                                        node["in_fp"],
+                                        node["in_data"]
+                                    )
                                 )
-                            )
-                            threadPoolTaskCounter[id(node["pool"])] += 1
+                                threadPoolTaskCounter[id(node["pool"])] += 1
                             continue
 
                         in_edges = self._graph.copy().in_edges(node_id)
 
-                        if node["future"] is None and threadPoolTaskCounter[id(node["pool"])] >= node["pool"]._processes:
-                            node["future"] = node["pool"].apply_async(
-                                node["function"],
-                                (
-                                    node["footprint"],
-                                    node["in_data"]
+                        if node["future"] is None:
+                            if threadPoolTaskCounter[id(node["pool"])] >= node["pool"]._processes:
+                                node["future"] = node["pool"].apply_async(
+                                    node["function"],
+                                    (
+                                        node["footprint"],
+                                        node["in_data"]
+                                    )
                                 )
-                            )
-                            threadPoolTaskCounter[id(node["pool"])] += 1
+                                threadPoolTaskCounter[id(node["pool"])] += 1
+                            continue
 
                         elif node["future"].ready():
                             in_data = node["future"].get()
@@ -329,6 +332,7 @@ class Raster(object):
                                 else:
                                     self._graph.nodes[in_edge[0]]["in_data"] = in_data
                                 self._graph.remove_edge(*in_edge)
+                            continue
 
 
             self._clean_graph()
