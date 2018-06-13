@@ -69,7 +69,7 @@ class ResampledRaster(CachedRaster):
 
         primitives = {"primitive": raster}
 
-        def compute_data(compute_fp, *data): #*prim_footprints?
+        def resample_compute_data(compute_fp, *data): #*prim_footprints?
             """
             resampled raster compted data when collecting. this is a particular case
             """
@@ -87,7 +87,7 @@ class ResampledRaster(CachedRaster):
 
             return got_data
 
-        def collect_data(to_collect):
+        def resample_collect_data(to_collect):
             """
             mocks the behaviour of a primitive so the general function works
             """
@@ -248,7 +248,9 @@ def raster_factory(footprint,
                    computation_pool,
                    primitives,
                    to_collect_of_to_compute,
-                   to_compute_fps):#clé -> remplir dict
+                   to_compute_fps,
+                   merge_pool,
+                   merge_function):
     """
     creates a raster from arguments
     """
