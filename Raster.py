@@ -291,6 +291,7 @@ class Raster(object):
                                         node["data"].astype(self._dtype)
                                     )
                                 )
+                                threadPoolTaskCounter[id(node["pool"])] += 1
                             continue
 
                         in_edges = self._graph.copy().in_edges(node_id)
@@ -303,6 +304,7 @@ class Raster(object):
                                     node["in_data"]
                                 )
                             )
+                            threadPoolTaskCounter[id(node["pool"])] += 1
 
                         elif node["future"].ready():
                             in_data = node["future"].get()
