@@ -175,7 +175,7 @@ class Raster(object):
 
             # detecting which footprints to collect from the queue + pending
             # while there is space
-            while query.produced.qsize() + self._num_pending[id(query)] < query.produced.maxsize:
+            while query.produced.qsize() + self._num_pending[id(query)] < query.produced.maxsize and query.to_produce[-1][1] == "sleeping":
                 # getting the first sleeping to_produce
                 to_produce_available = [to_produce[0] for to_produce in query.to_produce if to_produce[1] == "sleeping"][0]
                 # getting its id in the graph

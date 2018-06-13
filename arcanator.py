@@ -286,7 +286,7 @@ def main():
 
     # rgba_out = resampled_rgba.get_multi_data(list(cache_tiles64.flat), 1)
     # slopes_out = slopes.get_multi_data(list(cache_tiles128.flat), 1)
-    hm_out = hmr.get_multi_data(cache_tiles64.flat, 5)
+    hm_out = hmr.get_multi_data(cache_tiles64.flat, 100000000)
 
     for display_fp in cache_tiles64.flat:
         try:
