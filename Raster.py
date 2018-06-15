@@ -364,7 +364,7 @@ class Raster(object):
         print(self.__class__.__name__, " collecting ", threading.currentThread().getName())
         results = {}
         for primitive in self._primitives.keys():
-            results[primitive] = self._primitives[primitive].get_multi_data_queue(to_collect[primitive])
+            results[primitive] = self._primitives[primitive](to_collect[primitive])
         return results
 
     def _to_compute_of_to_produce(self, fp):
@@ -408,8 +408,27 @@ class Raster(object):
 
                 if isinstance(self._computation_tiles, np.ndarray):
                     multi_to_compute = self._to_compute_of_to_produce(to_produce[0])
+
+                    to_merge = to_produce
+
+                    to_merge_uid = _get_graph_uid(to_merge, "to_merge")
+                    self._graph.add_node(
+                        to_merge_uid,
+                        footprint=to_merge,
+                        future=None,
+                        futures=[],
+                        data=np.zeros(tuple(to_produce.shape) + (self._num_bands,)),
+                        type="to_merge",
+                        pool=self._merge_pool,
+                        function=self._merge_data,
+                        in_data=[],
+                        in_fp=[]
+                    )
+                    self._graph.add_edge(to_produce_uid, to_merge_uid)
+
                 else:
                     multi_to_compute = [to_produce[0]]
+                    to_merge_uid = None
 
                 for to_compute in multi_to_compute:
                     to_compute_uid = _get_graph_uid(to_compute, "to_compute")
@@ -423,7 +442,11 @@ class Raster(object):
                         function=self._compute_data,
                         in_data=None
                     )
-                    self._graph.add_edge(to_produce_uid, to_compute_uid)
+                    if to_merge_uid is None:
+                        self._graph.add_edge(to_produce_uid, to_compute_uid)
+                    else:
+                        self._graph.add_edge(to_merge_uid, to_compute_uid)
+                        
                     multi_to_collect = self._to_collect_of_to_compute(to_compute)
 
                     for key in multi_to_collect:
@@ -575,7 +598,7 @@ class CachedRaster(Raster):
                                       data.dtype,
                                       self._num_bands,
                                       driver="GTiff",
-                                      sr=self._primitives[list(self._primitives.keys())[0]].wkt_origin
+                                      sr=self.wkt_origin
                                      )
         out_proxy.set_data(data, band=-1)
         out_proxy.close()
@@ -648,7 +671,7 @@ class CachedRaster(Raster):
                             self._graph.add_edge(to_read_uid, to_write_uid)
 
                             to_merge = to_write
-                            to_merge_uid = _get_graph_uid(to_write, "to_merge")
+                            to_merge_uid = _get_graph_uid(to_merge, "to_merge")
 
                             self._graph.add_node(
                                 to_merge_uid,
