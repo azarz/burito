@@ -15,7 +15,8 @@ from show_many_images import show_many_images
 from uids_of_paths import uids_of_paths
 from watcher import Watcher
 
-from Raster import Raster, CachedRaster, output_fp_to_input_fp
+from Raster import Raster, CachedRaster, raster_factory
+from output_fp_to_input_fp import output_fp_to_input_fp
 
 CATEGORIES = (
     #0        1       2        3        4
@@ -108,6 +109,10 @@ class ResampledRaster(CachedRaster):
                          resample_compute_data, cache_dir, cache_fps, g_io_pool, g_cpu_pool,
                          primitives, to_collect_of_to_compute, cache_fps
                         )
+
+        return raster_factory(full_fp, dtype, num_bands, nodata, wkt_origin,
+                         resample_compute_data, True, cache_dir, cache_fps, g_io_pool, g_cpu_pool,
+                         primitives, to_collect_of_to_compute, cache_fps, None, None)
 
         self._collect_data = resample_collect_data
 
