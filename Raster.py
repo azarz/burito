@@ -9,6 +9,7 @@ import os
 import threading
 import time
 from collections import defaultdict
+import glob
 
 import numpy as np
 import networkx as nx
@@ -16,6 +17,7 @@ import buzzard as buzz
 
 from Query import Query
 from SingletonCounter import SingletonCounter
+from checksum import checksum, checksum_file
 
 threadPoolTaskCounter = SingletonCounter()
 
@@ -161,7 +163,6 @@ class Raster(object):
 
             if not query.to_produce:
                 self._num_pending[query] = 0
-                self._num_put[query] = 0
                 self._queries.remove(query)
                 continue
 
@@ -580,7 +581,17 @@ class CachedRaster(Raster):
             self._cache_checksum_array[index] = self._check_cache_file(footprint)
 
     def _check_cache_file(self, footprint):
-        return os.path.isfile(self._get_cache_tile_path(footprint))
+        cache_tile_path = self._get_cache_tile_path(footprint)
+        if not cache_tile_path:
+            return False
+        else:
+            cache_path = cache_tile_path[0]
+            checksum_dot_tif = cache_path.split('_')[-1]
+            file_checksum = checksum_dot_tif.split('.')[0]
+
+            if file_checksum == f'`{checksum_file(cache_path):#010x}`':
+                return True
+        return False
 
     def _check_query(self, query):
         to_produce_fps = query.to_produce
@@ -588,15 +599,33 @@ class CachedRaster(Raster):
         self._check_cache_fps(to_check)
 
 
+    def _get_cache_tile_path_prefix(self, cache_tile):
+        """
+        Returns a string, which is a path to a cache tile from its fp
+        """
+        tile_index = np.where(self._cache_tiles == cache_tile)
+        path = str(
+            Path(self._cache_dir) /
+            "{}_{}_{}_{}_{:.0f}_{:.0f}_{}_{}".format(
+                *self._full_fp.rsize,
+                *cache_tile.rsize,
+                cache_tile.tl[0]/cache_tile.pxsizex - self._full_fp.tl[0]/cache_tile.pxsizex,
+                self._full_fp.tl[1]/cache_tile.pxsizex - cache_tile.tl[1]/cache_tile.pxsizex,
+                tile_index[0][0],
+                tile_index[1][0]
+            )
+        )
+        return path
+
+
     def _get_cache_tile_path(self, cache_tile):
         """
         Returns a string, which is a path to a cache tile from its fp
         """
-        path = str(
-            Path(self._cache_dir) /
-            "{:.2f}_{:.2f}_{:.2f}_{}".format(*cache_tile.tl, cache_tile.pxsizex, cache_tile.rsizex)
-        )
-        return path
+        prefix = self._get_cache_tile_path_prefix(cache_tile)
+        file_path = glob.glob(prefix + "*")
+        assert len(file_path) <= 1
+        return file_path
 
 
     def _read_cache_data(self, cache_tile, _placeholder=None):
@@ -604,7 +633,7 @@ class CachedRaster(Raster):
         reads cache data
         """
         print(self.__class__.__name__, " reading ", threading.currentThread().getName())
-        filepath = self._get_cache_tile_path(cache_tile)
+        filepath = self._get_cache_tile_path(cache_tile)[0]
 
         if not hasattr(self._thread_storage, "ds"):
             ds = buzz.DataSource(allow_interpolation=True)
@@ -622,7 +651,8 @@ class CachedRaster(Raster):
         writes cache data
         """
         print(self.__class__.__name__, " writing ", threading.currentThread().getName())
-        filepath = self._get_cache_tile_path(cache_tile)
+        cs = checksum(data)
+        filepath = self._get_cache_tile_path_prefix(cache_tile) + "_" + f'`{cs:#010x}`' + ".tif"
         if not hasattr(self._thread_storage, "ds"):
             ds = buzz.DataSource(allow_interpolation=True)
             self._thread_storage.ds = ds
