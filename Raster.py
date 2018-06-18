@@ -149,7 +149,10 @@ class Raster(object):
 
             while self._new_queries:
                 print(self.__class__.__name__, " updating graph ", threading.currentThread().getName())
-                self._update_graph_from_query(self._new_queries.pop(0))
+                new_query = self._new_queries.pop(0)
+                if isinstance(self, CachedRaster):
+                    self._check_query(new_query)
+                self._update_graph_from_query(new_query)
 
             # ordering queries accroding to their pressure
             ordered_queries = sorted(self._queries, key=self._pressure_ratio)
@@ -546,8 +549,8 @@ class CachedRaster(Raster):
 
         # Array used to track the state of cahce tiles:
         # None: not yet met
-        # -1: met, has to be written
-        #  1: met, already written and valid
+        # False: met, has to be written
+        # True: met, already written and valid
         self._cache_checksum_array = np.empty(cache_fps.shape, dtype=object)
 
         # Used to keep duplicates in to_read
@@ -557,7 +560,7 @@ class CachedRaster(Raster):
     def _to_check_of_to_produce(self, to_produce_fps):
         intersecting_fps = []
         for to_produce in to_produce_fps:
-            intersecting_fps.append(self._to_read_of_to_produce(to_produce))
+            intersecting_fps += self._to_read_of_to_produce(to_produce[0])
         intersecting_fps = set(intersecting_fps)
 
         indices = []
@@ -569,6 +572,20 @@ class CachedRaster(Raster):
                 indices.remove(index)
 
         return indices
+
+
+    def _check_cache_fps(self, indices):
+        for index in indices:
+            footprint = self._cache_tiles[index][0]
+            self._cache_checksum_array[index] = self._check_cache_file(footprint)
+
+    def _check_cache_file(self, footprint):
+        return os.path.isfile(self._get_cache_tile_path(footprint))
+
+    def _check_query(self, query):
+        to_produce_fps = query.to_produce
+        to_check = self._to_check_of_to_produce(to_produce_fps)
+        self._check_cache_fps(to_check)
 
 
     def _get_cache_tile_path(self, cache_tile):
@@ -747,7 +764,7 @@ class CachedRaster(Raster):
         return to_read_list
 
     def _is_written(self, cache_fp):
-        return os.path.isfile(self._get_cache_tile_path(cache_fp))
+        return self._cache_checksum_array[np.where(self._cache_tiles == cache_fp)]
 
     def _to_compute_of_to_write(self, fp):
         to_compute_list = []
