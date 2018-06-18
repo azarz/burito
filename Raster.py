@@ -544,10 +544,31 @@ class CachedRaster(Raster):
         self._cache_dir = cache_dir
         self._cache_tiles = cache_fps
 
+        # Array used to track the state of cahce tiles:
+        # None: not yet met
+        # -1: met, has to be written
+        #  1: met, already written and valid
+        self._cache_checksum_array = np.empty(cache_fps.shape, dtype=object)
+
         # Used to keep duplicates in to_read
         self._to_read_in_occurencies_dict = defaultdict(int)
 
 
+    def _to_check_of_to_produce(self, to_produce_fps):
+        intersecting_fps = []
+        for to_produce in to_produce_fps:
+            intersecting_fps.append(self._to_read_of_to_produce(to_produce))
+        intersecting_fps = set(intersecting_fps)
+
+        indices = []
+        for intersecting_fp in intersecting_fps:
+            indices.append(np.where(self._cache_tiles == intersecting_fp))
+
+        for index in indices:
+            if self._cache_checksum_array[index][0] is not None:
+                indices.remove(index)
+
+        return indices
 
 
     def _get_cache_tile_path(self, cache_tile):
