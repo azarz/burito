@@ -147,7 +147,9 @@ class Raster(object):
             if not self._queries:
                 continue
 
-            self._update_graph_from_queries()
+            while self._new_queries:
+                print(self.__class__.__name__, " updating graph ", threading.currentThread().getName())
+                self._update_graph_from_query(self._new_queries.pop(0))
 
             # ordering queries accroding to their pressure
             ordered_queries = sorted(self._queries, key=self._pressure_ratio)
@@ -376,95 +378,91 @@ class Raster(object):
         return to_compute_list
 
 
-    def _update_graph_from_queries(self):
+    def _update_graph_from_query(self, new_query):
         """
         Updates the dependency graph from the new queries (NO CACHE!)
         """
 
-        while self._new_queries:
-            print(self.__class__.__name__, " updating graph ", threading.currentThread().getName())
-            new_query = self._new_queries.pop(0)
+        # {
+        #    "p1": [to_collect_p1_1, ..., to_collect_p1_n],
+        #    ...,
+        #    "pp": [to_collect_pp_1, ..., to_collect_pp_n]
+        # }
+        # with p # of primitives and n # of to_compute fps
 
-            # {
-            #    "p1": [to_collect_p1_1, ..., to_collect_p1_n],
-            #    ...,
-            #    "pp": [to_collect_pp_1, ..., to_collect_pp_n]
-            # }
-            # with p # of primitives and n # of to_compute fps
+        # initializing to_collect dictionnary
+        new_query.to_collect = {key: [] for key in self._primitives.keys()}
 
-            # initializing to_collect dictionnary
-            new_query.to_collect = {key: [] for key in self._primitives.keys()}
+        for to_produce in new_query.to_produce:
+            to_produce_uid = _get_graph_uid(to_produce[0], "to_produce" + str(self._to_produce_in_occurencies_dict[to_produce[0]]))
+            self._to_produce_in_occurencies_dict[to_produce[0]] += 1
+            self._graph.add_node(
+                to_produce_uid,
+                futures=[],
+                footprint=to_produce[0],
+                data=np.zeros(tuple(to_produce[0].shape) + (self._num_bands,)),
+                type="to_produce"
+            )
 
-            for to_produce in new_query.to_produce:
-                to_produce_uid = _get_graph_uid(to_produce[0], "to_produce" + str(self._to_produce_in_occurencies_dict[to_produce[0]]))
-                self._to_produce_in_occurencies_dict[to_produce[0]] += 1
+            if isinstance(self._computation_tiles, np.ndarray):
+                multi_to_compute = self._to_compute_of_to_produce(to_produce[0])
+
+                to_merge = to_produce
+
+                to_merge_uid = _get_graph_uid(to_merge, "to_merge")
                 self._graph.add_node(
-                    to_produce_uid,
+                    to_merge_uid,
+                    footprint=to_merge,
+                    future=None,
                     futures=[],
-                    footprint=to_produce[0],
-                    data=np.zeros(tuple(to_produce[0].shape) + (self._num_bands,)),
-                    type="to_produce"
+                    data=np.zeros(tuple(to_produce.shape) + (self._num_bands,)),
+                    type="to_merge",
+                    pool=self._merge_pool,
+                    function=self._merge_data,
+                    in_data=[],
+                    in_fp=[]
                 )
+                self._graph.add_edge(to_produce_uid, to_merge_uid)
 
-                if isinstance(self._computation_tiles, np.ndarray):
-                    multi_to_compute = self._to_compute_of_to_produce(to_produce[0])
+            else:
+                multi_to_compute = [to_produce[0]]
+                to_merge_uid = None
 
-                    to_merge = to_produce
+            for to_compute in multi_to_compute:
+                to_compute_uid = _get_graph_uid(to_compute, "to_compute")
 
-                    to_merge_uid = _get_graph_uid(to_merge, "to_merge")
-                    self._graph.add_node(
-                        to_merge_uid,
-                        footprint=to_merge,
-                        future=None,
-                        futures=[],
-                        data=np.zeros(tuple(to_produce.shape) + (self._num_bands,)),
-                        type="to_merge",
-                        pool=self._merge_pool,
-                        function=self._merge_data,
-                        in_data=[],
-                        in_fp=[]
-                    )
-                    self._graph.add_edge(to_produce_uid, to_merge_uid)
-
+                self._graph.add_node(
+                    to_compute_uid,
+                    footprint=to_compute,
+                    future=None,
+                    type="to_compute",
+                    pool=self._computation_pool,
+                    function=self._compute_data,
+                    in_data=None
+                )
+                if to_merge_uid is None:
+                    self._graph.add_edge(to_produce_uid, to_compute_uid)
                 else:
-                    multi_to_compute = [to_produce[0]]
-                    to_merge_uid = None
+                    self._graph.add_edge(to_merge_uid, to_compute_uid)
 
-                for to_compute in multi_to_compute:
-                    to_compute_uid = _get_graph_uid(to_compute, "to_compute")
+                multi_to_collect = self._to_collect_of_to_compute(to_compute)
 
+                for key in multi_to_collect:
+                    if multi_to_collect[key] not in new_query.to_collect[key]:
+                        new_query.to_collect[key].append(multi_to_collect[key])
+
+                for key in multi_to_collect:
+                    to_collect_uid = _get_graph_uid(multi_to_collect[key], "to_collect" + key + str(id(new_query)))
                     self._graph.add_node(
-                        to_compute_uid,
-                        footprint=to_compute,
+                        to_collect_uid,
+                        footprint=multi_to_collect[key],
                         future=None,
-                        type="to_compute",
-                        pool=self._computation_pool,
-                        function=self._compute_data,
-                        in_data=None
+                        type="to_collect",
+                        primitive=key
                     )
-                    if to_merge_uid is None:
-                        self._graph.add_edge(to_produce_uid, to_compute_uid)
-                    else:
-                        self._graph.add_edge(to_merge_uid, to_compute_uid)
-                        
-                    multi_to_collect = self._to_collect_of_to_compute(to_compute)
+                    self._graph.add_edge(to_compute_uid, to_collect_uid)
 
-                    for key in multi_to_collect:
-                        if multi_to_collect[key] not in new_query.to_collect[key]:
-                            new_query.to_collect[key].append(multi_to_collect[key])
-
-                    for key in multi_to_collect:
-                        to_collect_uid = _get_graph_uid(multi_to_collect[key], "to_collect" + key + str(id(new_query)))
-                        self._graph.add_node(
-                            to_collect_uid,
-                            footprint=multi_to_collect[key],
-                            future=None,
-                            type="to_collect",
-                            primitive=key
-                        )
-                        self._graph.add_edge(to_compute_uid, to_collect_uid)
-
-            new_query.collected = self._collect_data(new_query.to_collect)
+        new_query.collected = self._collect_data(new_query.to_collect)
 
 
 
@@ -604,123 +602,119 @@ class CachedRaster(Raster):
         out_proxy.close()
 
 
-    def _update_graph_from_queries(self):
+    def _update_graph_from_query(self, new_query):
         """
         Updates the dependency graph from the new queries
         """
 
-        while self._new_queries:
-            print(self.__class__.__name__, " updating graph ", threading.currentThread().getName())
-            new_query = self._new_queries.pop(0)
+        # [
+        #    [to_collect_p1_1, ..., to_collect_p1_n],
+        #    ...,
+        #    [to_collect_pp_1, ..., to_collect_pp_n]
+        # ]
+        # with p # of primitives and n # of to_compute fps
 
-            # [
-            #    [to_collect_p1_1, ..., to_collect_p1_n],
-            #    ...,
-            #    [to_collect_pp_1, ..., to_collect_pp_n]
-            # ]
-            # with p # of primitives and n # of to_compute fps
+        # initializing to_collect dictionnary
+        new_query.to_collect = {key: [] for key in self._primitives.keys()}
 
-            # initializing to_collect dictionnary
-            new_query.to_collect = {key: [] for key in self._primitives.keys()}
+        for to_produce in new_query.to_produce:
+            to_produce_uid = _get_graph_uid(to_produce[0], "to_produce" + str(self._to_produce_in_occurencies_dict[to_produce[0]]))
+            self._to_produce_in_occurencies_dict[to_produce[0]] += 1
+            self._graph.add_node(
+                to_produce_uid,
+                footprint=to_produce[0],
+                futures=[],
+                data=np.zeros(tuple(to_produce[0].shape) + (self._num_bands,)),
+                type="to_produce",
+                in_data=None
+            )
+            to_read_tiles = self._to_read_of_to_produce(to_produce[0])
 
-            for to_produce in new_query.to_produce:
-                to_produce_uid = _get_graph_uid(to_produce[0], "to_produce" + str(self._to_produce_in_occurencies_dict[to_produce[0]]))
-                self._to_produce_in_occurencies_dict[to_produce[0]] += 1
+            for to_read in to_read_tiles:
+                to_read_uid = _get_graph_uid(to_read, "to_read" + str(self._to_read_in_occurencies_dict[to_read]))
+                self._to_read_in_occurencies_dict[to_read] += 1
+
                 self._graph.add_node(
-                    to_produce_uid,
-                    footprint=to_produce[0],
-                    futures=[],
-                    data=np.zeros(tuple(to_produce[0].shape) + (self._num_bands,)),
-                    type="to_produce",
+                    to_read_uid,
+                    footprint=to_read,
+                    future=None,
+                    type="to_read",
+                    pool=self._io_pool,
+                    function=self._read_cache_data,
                     in_data=None
                 )
-                to_read_tiles = self._to_read_of_to_produce(to_produce[0])
+                self._graph.add_edge(to_produce_uid, to_read_uid)
 
-                for to_read in to_read_tiles:
-                    to_read_uid = _get_graph_uid(to_read, "to_read" + str(self._to_read_in_occurencies_dict[to_read]))
-                    self._to_read_in_occurencies_dict[to_read] += 1
+                # if the tile is not written, writing it
+                if not self._is_written(to_read):
+                    to_write = to_read
 
-                    self._graph.add_node(
-                        to_read_uid,
-                        footprint=to_read,
-                        future=None,
-                        type="to_read",
-                        pool=self._io_pool,
-                        function=self._read_cache_data,
-                        in_data=None
-                    )
-                    self._graph.add_edge(to_produce_uid, to_read_uid)
+                    to_write_uid = _get_graph_uid(to_write, "to_write")
+                    if to_write_uid in self._graph.nodes():
+                        self._graph.add_edge(to_read_uid, to_write_uid)
+                    else:
+                        self._graph.add_node(
+                            to_write_uid,
+                            footprint=to_write,
+                            future=None,
+                            type="to_write",
+                            pool=self._io_pool,
+                            function=self._write_cache_data,
+                            in_data=None
+                        )
+                        self._graph.add_edge(to_read_uid, to_write_uid)
 
-                    # if the tile is not written, writing it
-                    if not self._is_written(to_read):
-                        to_write = to_read
+                        to_merge = to_write
+                        to_merge_uid = _get_graph_uid(to_merge, "to_merge")
 
-                        to_write_uid = _get_graph_uid(to_write, "to_write")
-                        if to_write_uid in self._graph.nodes():
-                            self._graph.add_edge(to_read_uid, to_write_uid)
-                        else:
+                        self._graph.add_node(
+                            to_merge_uid,
+                            footprint=to_merge,
+                            future=None,
+                            futures=[],
+                            data=np.zeros(tuple(to_write.shape) + (self._num_bands,)),
+                            type="to_merge",
+                            pool=self._merge_pool,
+                            function=self._merge_data,
+                            in_data=[],
+                            in_fp=[]
+                        )
+                        self._graph.add_edge(to_write_uid, to_merge_uid)
+
+
+                        to_compute_multi = self._to_compute_of_to_write(to_write)
+
+                        for to_compute in to_compute_multi:
+                            to_compute_uid = _get_graph_uid(to_compute, "to_compute")
+
                             self._graph.add_node(
-                                to_write_uid,
-                                footprint=to_write,
+                                to_compute_uid,
+                                footprint=to_compute,
                                 future=None,
-                                type="to_write",
-                                pool=self._io_pool,
-                                function=self._write_cache_data,
+                                type="to_compute",
+                                pool=self._computation_pool,
+                                function=self._compute_data,
                                 in_data=None
                             )
-                            self._graph.add_edge(to_read_uid, to_write_uid)
+                            self._graph.add_edge(to_merge_uid, to_compute_uid)
+                            multi_to_collect = self._to_collect_of_to_compute(to_compute)
 
-                            to_merge = to_write
-                            to_merge_uid = _get_graph_uid(to_merge, "to_merge")
+                            for key in multi_to_collect:
+                                if multi_to_collect[key] not in new_query.to_collect[key]:
+                                    new_query.to_collect[key].append(multi_to_collect[key])
 
-                            self._graph.add_node(
-                                to_merge_uid,
-                                footprint=to_merge,
-                                future=None,
-                                futures=[],
-                                data=np.zeros(tuple(to_write.shape) + (self._num_bands,)),
-                                type="to_merge",
-                                pool=self._merge_pool,
-                                function=self._merge_data,
-                                in_data=[],
-                                in_fp=[]
-                            )
-                            self._graph.add_edge(to_write_uid, to_merge_uid)
-
-
-                            to_compute_multi = self._to_compute_of_to_write(to_write)
-
-                            for to_compute in to_compute_multi:
-                                to_compute_uid = _get_graph_uid(to_compute, "to_compute")
-
+                            for key in multi_to_collect:
+                                to_collect_uid = _get_graph_uid(multi_to_collect[key], "to_collect" + key + str(id(new_query)))
                                 self._graph.add_node(
-                                    to_compute_uid,
-                                    footprint=to_compute,
+                                    to_collect_uid,
+                                    footprint=multi_to_collect[key],
                                     future=None,
-                                    type="to_compute",
-                                    pool=self._computation_pool,
-                                    function=self._compute_data,
-                                    in_data=None
+                                    type="to_collect",
+                                    primitive=key
                                 )
-                                self._graph.add_edge(to_merge_uid, to_compute_uid)
-                                multi_to_collect = self._to_collect_of_to_compute(to_compute)
+                                self._graph.add_edge(to_compute_uid, to_collect_uid)
 
-                                for key in multi_to_collect:
-                                    if multi_to_collect[key] not in new_query.to_collect[key]:
-                                        new_query.to_collect[key].append(multi_to_collect[key])
-
-                                for key in multi_to_collect:
-                                    to_collect_uid = _get_graph_uid(multi_to_collect[key], "to_collect" + key + str(id(new_query)))
-                                    self._graph.add_node(
-                                        to_collect_uid,
-                                        footprint=multi_to_collect[key],
-                                        future=None,
-                                        type="to_collect",
-                                        primitive=key
-                                    )
-                                    self._graph.add_edge(to_compute_uid, to_collect_uid)
-
-            new_query.collected = self._collect_data(new_query.to_collect)
+        new_query.collected = self._collect_data(new_query.to_collect)
 
 
     def _to_read_of_to_produce(self, fp):
