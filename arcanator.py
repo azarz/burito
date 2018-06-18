@@ -85,28 +85,12 @@ def resampled_raster(raster, scale, cache_dir, cache_fps):
 
         return got_data
 
-    def mock_get_multi_data_q(to_collect):
-        """
-        mocks the behaviour of a primitive, returns a queue full of empty arrays
-        """
-        result = queue.Queue()
-        for _ in to_collect:
-            result.put([])
 
-        return result
-
-    def to_collect_of_to_compute(fp):
-        """
-        mocks the behaviour of a tranformation
-        """
-        return {"primitive": fp}
-
-
-    primitives = {"primitive": mock_get_multi_data_q}
+    primitives = {}
 
     return raster_factory(full_fp, dtype, num_bands, nodata, wkt_origin,
                      compute_data, True, cache_dir, cache_fps, g_io_pool, g_cpu_pool,
-                     primitives, to_collect_of_to_compute, cache_fps, None, None)
+                     primitives, None, cache_fps, None, None)
 
 
 
