@@ -13,9 +13,8 @@ import buzzard as buzz
 
 from show_many_images import show_many_images
 from uids_of_paths import uids_of_paths
-from watcher import Watcher
 
-from Raster import Raster, CachedRaster, raster_factory
+from Raster import raster_factory
 from output_fp_to_input_fp import output_fp_to_input_fp
 
 CATEGORIES = (
@@ -162,12 +161,12 @@ def slopes_raster(dsm):
     num_bands = 2
     dtype = "float32"
 
-    return raster_factory(full_fp,
-                     dtype,
-                     num_bands,
-                     nodata,
-                     None, # dsm.wkt_origin
-                     compute_data,
+    return raster_factory(footprint=full_fp,
+                     dtype=dtype,
+                     nbands=num_bands,
+                     nodata=nodata,
+                     srs=None, # dsm.wkt_origin
+                     computation_function=compute_data,
                      cached=False,
                      cache_dir=None,
                      cache_fps=None,

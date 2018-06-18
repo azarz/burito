@@ -8,12 +8,14 @@ def checksum(array):
     """
     Computes the checksum of an array
     """
+    array.dtype.bytes
     # Reinterpret array as unsigned integers
     b = array.view({
-        np.float32: np.uint32,
-        np.float64: np.uint64,
-        np.uint8: np.uint8
-    }[array.dtype.type])
+        4: np.uint32,
+        8: np.uint64,
+        1: np.uint8,
+        2: np.uint16
+    }[array.dtype.num])
 
     # Convert to 64 bit
     b = b.astype('uint64')

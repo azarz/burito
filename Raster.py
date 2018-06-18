@@ -203,42 +203,43 @@ class Raster(object):
                 if collected_primitive.empty():
                     one_is_empty = True
 
-            prim = list(self._primitives.keys())[0]
+            if list(self._primitives.keys()):
+                prim = list(self._primitives.keys())[0]
 
-            too_many_tasks = threadPoolTaskCounter[id(self._computation_pool)] >= self._computation_pool._processes
-            # if they are all not empty and can be collected without saturation
-            if not one_is_empty and query.to_collect[prim][0] in to_collect_batch[prim] and not too_many_tasks:
-                # getting all the collected data
-                collected_data = []
-                for collected_primitive in query.collected.keys():
-                    collected_data.append(query.collected[collected_primitive].get(block=False))
+                too_many_tasks = threadPoolTaskCounter[id(self._computation_pool)] >= self._computation_pool._processes
+                # if they are all not empty and can be collected without saturation
+                if not one_is_empty and query.to_collect[prim][0] in to_collect_batch[prim] and not too_many_tasks:
+                    # getting all the collected data
+                    collected_data = []
+                    for collected_primitive in query.collected.keys():
+                        collected_data.append(query.collected[collected_primitive].get(block=False))
 
-                # for each graph edge out of the collected, applying the asyncresult to the out node
-                for prim in self._primitives.keys():
-                    try:
-                        collect_in_edges = self._graph.copy().in_edges(_get_graph_uid(
-                            query.to_collect[prim][0],
-                            "to_collect" + prim + str(id(query))
-                        ))
+                    # for each graph edge out of the collected, applying the asyncresult to the out node
+                    for prim in self._primitives.keys():
+                        try:
+                            collect_in_edges = self._graph.copy().in_edges(_get_graph_uid(
+                                query.to_collect[prim][0],
+                                "to_collect" + prim + str(id(query))
+                            ))
 
-                        for edge in collect_in_edges:
-                            compute_node = self._graph.nodes[edge[0]]
-                            threadPoolTaskCounter[id(self._computation_pool)] += 1
-                            compute_node["future"] = self._computation_pool.apply_async(
-                                self._compute_data,
-                                (
-                                    self._graph.nodes[edge[0]]["footprint"],
-                                    *collected_data
+                            for edge in collect_in_edges:
+                                compute_node = self._graph.nodes[edge[0]]
+                                threadPoolTaskCounter[id(self._computation_pool)] += 1
+                                compute_node["future"] = self._computation_pool.apply_async(
+                                    self._compute_data,
+                                    (
+                                        self._graph.nodes[edge[0]]["footprint"],
+                                        *collected_data
+                                    )
                                 )
-                            )
-                            compute_out_edges = self._graph.copy().out_edges(edge[0])
-                            for to_remove_edge in compute_out_edges:
-                                self._graph.remove_edge(*to_remove_edge)
-                    except nx.NetworkXError:
-                        pass
-                    finally:
-                        query.to_collect[prim].pop(0)
-                continue
+                                compute_out_edges = self._graph.copy().out_edges(edge[0])
+                                for to_remove_edge in compute_out_edges:
+                                    self._graph.remove_edge(*to_remove_edge)
+                        except nx.NetworkXError:
+                            pass
+                        finally:
+                            query.to_collect[prim].pop(0)
+                    continue
 
             # iterating through the graph
             for index, to_produce in enumerate(query.to_produce):
@@ -448,7 +449,9 @@ class Raster(object):
                     self._graph.add_edge(to_produce_uid, to_compute_uid)
                 else:
                     self._graph.add_edge(to_merge_uid, to_compute_uid)
-
+                
+                if self._to_collect_of_to_compute is None:
+                    continue
                 multi_to_collect = self._to_collect_of_to_compute(to_compute)
 
                 for key in multi_to_collect:
@@ -589,7 +592,7 @@ class CachedRaster(Raster):
             checksum_dot_tif = cache_path.split('_')[-1]
             file_checksum = checksum_dot_tif.split('.')[0]
 
-            if file_checksum == f'`{checksum_file(cache_path):#010x}`':
+            if int(file_checksum, base=16) == checksum_file(cache_path):
                 return True
         return False
 
@@ -749,7 +752,6 @@ class CachedRaster(Raster):
                         )
                         self._graph.add_edge(to_write_uid, to_merge_uid)
 
-
                         to_compute_multi = self._to_compute_of_to_write(to_write)
 
                         for to_compute in to_compute_multi:
@@ -765,6 +767,8 @@ class CachedRaster(Raster):
                                 in_data=None
                             )
                             self._graph.add_edge(to_merge_uid, to_compute_uid)
+                            if self._to_collect_of_to_compute is None:
+                                continue
                             multi_to_collect = self._to_collect_of_to_compute(to_compute)
 
                             for key in multi_to_collect:
