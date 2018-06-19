@@ -6,6 +6,7 @@ import multiprocessing as mp
 import multiprocessing.pool
 import gc
 import time
+import sys
 
 import scipy.ndimage as ndi
 import matplotlib.pyplot as plt
@@ -15,9 +16,6 @@ def main():
     g_io_pool = mp.pool.ThreadPool()
     g_merge_pool = mp.pool.ThreadPool()
     full_fp = buzz.Footprint(tl=(0, 0), size=(12691, 12691), rsize=(126910, 126910))
-    print(full_fp, full_fp.scale, full_fp.rarea*4/(1024**3))
-    print()
-    print(full_fp._significant_min)
 
     def compute_data(fp, *args):
         return np.random.rand(fp.shape[0], fp.shape[1])
@@ -111,14 +109,14 @@ def main():
 
     print(tile_count)
 
-    # for array, fp in zip(dot_raster.get_multi_data(tiles.flat), tiles.flat):
-    #     plt.imshow(array)
-    #     plt.show()
-    #     gc.collect()
+    for array, fp in zip(dot_raster.get_multi_data(tiles.flat), tiles.flat):
+        plt.imshow(array)
+        plt.show()
+        gc.collect()
 
-    a = dot_raster.get_multi_data(tiles.flat)
-    del a
-    input()
+    # a = dot_raster.get_multi_data(tiles.flat)
+    # del a
+    # input()
 
 if __name__ == "__main__":
     main()

@@ -12,6 +12,7 @@ from collections import defaultdict
 import glob
 import shutil
 import weakref
+import sys
 
 import numpy as np
 import networkx as nx
@@ -115,12 +116,14 @@ class Raster(object):
         self._num_pending = defaultdict(int)
 
 
-    def _pressure_ratio(self, query):
+    def _pressure_ratio(self, weak_query):
         """
         defines a pressure ration of a query: lesser values -> emptier query
         """
-        num = query.produced.qsize() + self._num_pending[id(query)]
-        den = query.produced.maxsize
+        if weak_query() is None:
+            return -1
+        num = weak_query().produced.qsize() + self._num_pending[id(weak_query())]
+        den = weak_query().produced.maxsize
         return num/den
 
     @property
@@ -192,11 +195,20 @@ class Raster(object):
             # ordering queries accroding to their pressure
             ordered_queries = sorted(self._queries, key=self._pressure_ratio)
             # getting the emptiest query
-            query = ordered_queries[0]
+            query = ordered_queries[0]()
+
+            if query is None:
+                try:
+                    to_delete_edges = nx.dfs_edges(self._graph, source=id(ordered_queries[0]))
+                    self._graph.remove_edges_from(to_delete_edges)
+                    continue
+                except:
+                    continue
 
             if not query.to_produce:
                 self._num_pending[query] = 0
-                self._queries.remove(query)
+                self._queries.remove(ordered_queries[0])
+                self._graph.remove_node(id(ordered_queries[0]))
                 continue
 
             # if the emptiest query is full, waiting
@@ -305,7 +317,7 @@ class Raster(object):
                                 query.to_produce.pop(0)
 
                                 self._to_produce_out_occurencies_dict[to_produce[0]] += 1
-                                self._graph.remove_node(node_id)
+                                self._graph.remove_edge(id(query), node_id)
 
                                 self._num_pending[id(query)] -= 1
 
@@ -376,17 +388,7 @@ class Raster(object):
         removes the graph's orphans
         """
         # Used to keep duplicates in to_produce
-        to_produce_occurencies_dict = self._to_produce_out_occurencies_dict.copy()
-
         to_remove = list(nx.isolates(self._graph))
-
-        # not removing the orphan to_produce, they are removed when consumed
-        for query in self._queries:
-            for to_produce in query.to_produce:
-                to_produce_uid = _get_graph_uid(to_produce[0], "to_produce" + str(to_produce_occurencies_dict[to_produce[0]]))
-                to_produce_occurencies_dict[to_produce[0]] += 1
-                while to_produce_uid in to_remove:
-                    to_remove.remove(to_produce_uid)
 
         self._graph.remove_nodes_from(to_remove)
 
@@ -417,7 +419,7 @@ class Raster(object):
         return to_compute_list
 
 
-    def _update_graph_from_query(self, new_query):
+    def _update_graph_from_query(self, new_query_weakref):
         """
         Updates the dependency graph from the new queries (NO CACHE!)
         """
@@ -429,8 +431,16 @@ class Raster(object):
         # }
         # with p # of primitives and n # of to_compute fps
 
+        new_query = new_query_weakref()
+        if new_query is None:
+            return
+
         # initializing to_collect dictionnary
         new_query.to_collect = {key: [] for key in self._primitives.keys()}
+
+        self._graph.add_node(
+            id(new_query_weakref)
+        )
 
         for to_produce in new_query.to_produce:
             to_produce_uid = _get_graph_uid(to_produce[0], "to_produce" + str(self._to_produce_in_occurencies_dict[to_produce[0]]))
@@ -440,8 +450,10 @@ class Raster(object):
                 futures=[],
                 footprint=to_produce[0],
                 data=np.zeros(tuple(to_produce[0].shape) + (self._num_bands,)),
-                type="to_produce"
+                type="to_produce",
             )
+
+            self._graph.add_edge(id(new_query_weakref), to_produce_uid)
 
             if isinstance(self._computation_tiles, np.ndarray):
                 multi_to_compute = self._to_compute_of_to_produce(to_produce[0])
@@ -493,7 +505,7 @@ class Raster(object):
                         new_query.to_collect[key].append(multi_to_collect[key])
 
                 for key in multi_to_collect:
-                    to_collect_uid = _get_graph_uid(multi_to_collect[key], "to_collect" + key + str(id(new_query)))
+                    to_collect_uid = _get_graph_uid(multi_to_collect[key], "to_collect" + key + str(id(new_query_weakref)))
                     self._graph.add_node(
                         to_collect_uid,
                         footprint=multi_to_collect[key],
@@ -517,8 +529,10 @@ class Raster(object):
 
         query.to_produce += to_produce
 
-        self._queries.append(query)
-        self._new_queries.append(query)
+        query_weakref = weakref.ref(query)
+
+        self._queries.append(query_weakref)
+        self._new_queries.append(query_weakref)
 
         return query.produced
 
@@ -715,7 +729,7 @@ class CachedRaster(Raster):
         out_proxy.close()
 
 
-    def _update_graph_from_query(self, new_query):
+    def _update_graph_from_query(self, new_query_weakref):
         """
         Updates the dependency graph from the new queries
         """
@@ -727,8 +741,14 @@ class CachedRaster(Raster):
         # ]
         # with p # of primitives and n # of to_compute fps
 
+        new_query = new_query_weakref()
+
         # initializing to_collect dictionnary
         new_query.to_collect = {key: [] for key in self._primitives.keys()}
+
+        self._graph.add_node(
+            id(new_query_weakref)
+        )
 
         for to_produce in new_query.to_produce:
             to_produce_uid = _get_graph_uid(to_produce[0], "to_produce" + str(self._to_produce_in_occurencies_dict[to_produce[0]]))
@@ -742,6 +762,8 @@ class CachedRaster(Raster):
                 in_data=None
             )
             to_read_tiles = self._to_read_of_to_produce(to_produce[0])
+
+            self._graph.add_edge(id(new_query_weakref), to_produce_uid)
 
             for to_read in to_read_tiles:
                 to_read_uid = _get_graph_uid(to_read, "to_read" + str(self._to_read_in_occurencies_dict[to_read]))
@@ -818,7 +840,7 @@ class CachedRaster(Raster):
                                     new_query.to_collect[key].append(multi_to_collect[key])
 
                             for key in multi_to_collect:
-                                to_collect_uid = _get_graph_uid(multi_to_collect[key], "to_collect" + key + str(id(new_query)))
+                                to_collect_uid = _get_graph_uid(multi_to_collect[key], "to_collect" + key + str(id(new_query_weakref)))
                                 self._graph.add_node(
                                     to_collect_uid,
                                     footprint=multi_to_collect[key],
