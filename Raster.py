@@ -201,9 +201,11 @@ class Raster(object):
                 try:
                     to_delete_edges = nx.dfs_edges(self._graph, source=id(ordered_queries[0]))
                     self._graph.remove_edges_from(to_delete_edges)
-                    continue
                 except:
-                    continue
+                    pass
+                finally:
+                    self._queries.remove(ordered_queries[0])
+                continue
 
             if not query.to_produce:
                 self._num_pending[query] = 0

@@ -1,5 +1,5 @@
 """
-FullQuery class used by the raster to manage concurrent requests
+Query class used by the raster to manage concurrent requests
 """
 
 import queue
