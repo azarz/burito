@@ -13,6 +13,7 @@ import glob
 import shutil
 import weakref
 import sys
+import queue
 
 import numpy as np
 import networkx as nx
@@ -116,14 +117,12 @@ class Raster(object):
         self._num_pending = defaultdict(int)
 
 
-    def _pressure_ratio(self, weak_query):
+    def _pressure_ratio(self, query):
         """
         defines a pressure ration of a query: lesser values -> emptier query
         """
-        if weak_query() is None:
-            return -1
-        num = weak_query().produced.qsize() + self._num_pending[id(weak_query())]
-        den = weak_query().produced.maxsize
+        num = query.produced().qsize() + self._num_pending[id(query)]
+        den = query.produced().maxsize
         return num/den
 
     @property
@@ -195,7 +194,7 @@ class Raster(object):
             # ordering queries accroding to their pressure
             ordered_queries = sorted(self._queries, key=self._pressure_ratio)
             # getting the emptiest query
-            query = ordered_queries[0]()
+            query = ordered_queries[0]
 
             if query is None:
                 try:
@@ -214,12 +213,12 @@ class Raster(object):
                 continue
 
             # if the emptiest query is full, waiting
-            if query.produced.full():
+            if query.produced().full():
                 continue
 
             # detecting which footprints to collect from the queue + pending
             # while there is space
-            while query.produced.qsize() + self._num_pending[id(query)] < query.produced.maxsize and query.to_produce[-1][1] == "sleeping":
+            while query.produced().qsize() + self._num_pending[id(query)] < query.produced().maxsize and query.to_produce[-1][1] == "sleeping":
                 # getting the first sleeping to_produce
                 to_produce_available = [to_produce[0] for to_produce in query.to_produce if to_produce[1] == "sleeping"][0]
                 # getting its id in the graph
@@ -315,7 +314,7 @@ class Raster(object):
 
                                 if len(node["data"].shape) == 3 and node["data"].shape[2] == 1:
                                     node["data"] = node["data"].squeeze(axis=-1)
-                                query.produced.put(node["data"].astype(self._dtype), timeout=1e-2)
+                                query.produced().put(node["data"].astype(self._dtype), timeout=1e-2)
                                 query.to_produce.pop(0)
 
                                 self._to_produce_out_occurencies_dict[to_produce[0]] += 1
@@ -421,7 +420,7 @@ class Raster(object):
         return to_compute_list
 
 
-    def _update_graph_from_query(self, new_query_weakref):
+    def _update_graph_from_query(self, new_query):
         """
         Updates the dependency graph from the new queries (NO CACHE!)
         """
@@ -433,15 +432,11 @@ class Raster(object):
         # }
         # with p # of primitives and n # of to_compute fps
 
-        new_query = new_query_weakref()
-        if new_query is None:
-            return
-
         # initializing to_collect dictionnary
         new_query.to_collect = {key: [] for key in self._primitives.keys()}
 
         self._graph.add_node(
-            id(new_query_weakref)
+            id(new_query)
         )
 
         for to_produce in new_query.to_produce:
@@ -455,7 +450,7 @@ class Raster(object):
                 type="to_produce",
             )
 
-            self._graph.add_edge(id(new_query_weakref), to_produce_uid)
+            self._graph.add_edge(id(new_query), to_produce_uid)
 
             if isinstance(self._computation_tiles, np.ndarray):
                 multi_to_compute = self._to_compute_of_to_produce(to_produce[0])
@@ -507,7 +502,7 @@ class Raster(object):
                         new_query.to_collect[key].append(multi_to_collect[key])
 
                 for key in multi_to_collect:
-                    to_collect_uid = _get_graph_uid(multi_to_collect[key], "to_collect" + key + str(id(new_query_weakref)))
+                    to_collect_uid = _get_graph_uid(multi_to_collect[key], "to_collect" + key + str(id(new_query)))
                     self._graph.add_node(
                         to_collect_uid,
                         footprint=multi_to_collect[key],
@@ -526,17 +521,16 @@ class Raster(object):
         returns a queue (could be generator) from a fp_iterable
         """
         fp_iterable = list(fp_iterable)
-        query = Query(queue_size)
+        q = queue.Queue(queue_size)
+        query = Query(q)
         to_produce = [(fp, "sleeping") for fp in fp_iterable]
 
         query.to_produce += to_produce
 
-        query_weakref = weakref.ref(query)
+        self._queries.append(query)
+        self._new_queries.append(query)
 
-        self._queries.append(query_weakref)
-        self._new_queries.append(query_weakref)
-
-        return query.produced
+        return q
 
 
     def get_multi_data(self, fp_iterable, queue_size=5):
@@ -731,7 +725,7 @@ class CachedRaster(Raster):
         out_proxy.close()
 
 
-    def _update_graph_from_query(self, new_query_weakref):
+    def _update_graph_from_query(self, new_query):
         """
         Updates the dependency graph from the new queries
         """
@@ -743,13 +737,11 @@ class CachedRaster(Raster):
         # ]
         # with p # of primitives and n # of to_compute fps
 
-        new_query = new_query_weakref()
-
         # initializing to_collect dictionnary
         new_query.to_collect = {key: [] for key in self._primitives.keys()}
 
         self._graph.add_node(
-            id(new_query_weakref)
+            id(new_query)
         )
 
         for to_produce in new_query.to_produce:
@@ -765,7 +757,7 @@ class CachedRaster(Raster):
             )
             to_read_tiles = self._to_read_of_to_produce(to_produce[0])
 
-            self._graph.add_edge(id(new_query_weakref), to_produce_uid)
+            self._graph.add_edge(id(new_query), to_produce_uid)
 
             for to_read in to_read_tiles:
                 to_read_uid = _get_graph_uid(to_read, "to_read" + str(self._to_read_in_occurencies_dict[to_read]))
@@ -842,7 +834,7 @@ class CachedRaster(Raster):
                                     new_query.to_collect[key].append(multi_to_collect[key])
 
                             for key in multi_to_collect:
-                                to_collect_uid = _get_graph_uid(multi_to_collect[key], "to_collect" + key + str(id(new_query_weakref)))
+                                to_collect_uid = _get_graph_uid(multi_to_collect[key], "to_collect" + key + str(id(new_query)))
                                 self._graph.add_node(
                                     to_collect_uid,
                                     footprint=multi_to_collect[key],

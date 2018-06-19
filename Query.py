@@ -1,16 +1,15 @@
 """
 Query class used by the raster to manage concurrent requests
 """
-
-import queue
+import weakref
 
 class Query(object):
     """
     Query used by the Raster class
     """
-    def __init__(self, qsize=5):
+    def __init__(self, queue):
         self.to_produce = []
-        self.produced = queue.Queue(qsize)
+        self.produced = weakref.ref(queue)
 
         self.to_collect = {}
         self.collected = []
