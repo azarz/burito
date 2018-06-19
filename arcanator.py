@@ -48,6 +48,7 @@ CACHE_DIR = "./.cache"
 
 g_io_pool = mp.pool.ThreadPool()
 g_cpu_pool = mp.pool.ThreadPool()
+g_merge_pool = mp.pool.ThreadPool()
 g_gpu_pool = mp.pool.ThreadPool(1)
 
 
@@ -88,9 +89,22 @@ def resampled_raster(raster, scale, cache_dir, cache_fps):
 
     primitives = {}
 
-    return raster_factory(full_fp, dtype, num_bands, nodata, wkt_origin,
-                     compute_data, True, cache_dir, cache_fps, g_io_pool, g_cpu_pool,
-                     primitives, None, cache_fps, None, None)
+    return raster_factory(
+        footprint=full_fp, 
+        dtype=dtype, 
+        nbands=num_bands, 
+        nodata=nodata, 
+        srs=wkt_origin,
+        computation_function=compute_data, 
+        cached=True, 
+        cache_dir=cache_dir, 
+        cache_fps=cache_fps, 
+        io_pool=g_io_pool, 
+        computation_pool=g_cpu_pool,
+        primitives=primitives, 
+        computation_fps=cache_fps, 
+        merge_pool=g_merge_pool
+        )
 
 
 
@@ -151,16 +165,11 @@ def slopes_raster(dsm):
                      nodata=nodata,
                      srs=None, # dsm.wkt_origin
                      computation_function=compute_data,
-                     cached=False,
-                     cache_dir=None,
-                     cache_fps=None,
                      io_pool=g_io_pool,
                      computation_pool=g_cpu_pool,
                      primitives=primitives,
                      to_collect_of_to_compute=to_collect_of_to_compute,
-                     to_compute_fps=None,
-                     merge_pool=None,
-                     merge_function=None
+                     merge_pool=g_merge_pool
                     )
 
 
@@ -212,11 +221,21 @@ def heatmap_raster(model, resampled_rgba, slopes, cache_dir, cache_fps):
 
     computation_tiles = full_fp.tile(np.asarray(model.outputs[0].shape[1:3]).T)
 
-    return raster_factory(full_fp, dtype, num_bands, None, None,
-                     compute_data, True, cache_dir, cache_fps, g_io_pool, g_gpu_pool,
-                     primitives, to_collect_of_to_compute, computation_tiles,
-                     None, None
-                    )
+    return raster_factory(
+        footprint=full_fp, 
+        dtype=dtype, 
+        nbands=num_bands, 
+        computation_function=compute_data,
+        cached=True, 
+        cache_dir=cache_dir, 
+        cache_fps=cache_fps, 
+        io_pool=g_io_pool, 
+        computation_pool=g_gpu_pool,
+        primitives=primitives, 
+        to_collect_of_to_compute=to_collect_of_to_compute, 
+        computation_fps=computation_tiles, 
+        merge_pool=g_merge_pool
+    )
 
 
 

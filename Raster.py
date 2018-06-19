@@ -46,6 +46,8 @@ class Raster(object):
                  merge_function):
 
         self._full_fp = footprint
+        if computation_function is None:
+            raise ValueError()
         self._compute_data = computation_function
         self._dtype = dtype
         self._num_bands = nbands
