@@ -11,6 +11,7 @@ import time
 from collections import defaultdict
 import glob
 import shutil
+import weakref
 
 import numpy as np
 import networkx as nx
@@ -235,6 +236,7 @@ class Raster(object):
                 if collected_primitive.empty():
                     one_is_empty = True
 
+            # if threre are primitives
             if list(self._primitives.keys()):
                 prim = list(self._primitives.keys())[0]
 
