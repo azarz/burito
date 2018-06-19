@@ -10,6 +10,7 @@ import threading
 import time
 from collections import defaultdict
 import glob
+import shutil
 
 import numpy as np
 import networkx as nx
@@ -40,7 +41,9 @@ class Raster(object):
                  computation_pool,
                  primitives,
                  to_collect_of_to_compute,
-                 computation_tiles = None):
+                 computation_tiles,
+                 merge_pool,
+                 merge_function):
 
         self._full_fp = footprint
         self._compute_data = computation_function
@@ -48,8 +51,28 @@ class Raster(object):
         self._num_bands = nbands
         self._nodata = nodata
         self._wkt_origin = srs
-        self._io_pool = io_pool
-        self._computation_pool = computation_pool
+
+        if io_pool is None:
+            self._io_pool = mp.pool.ThreadPool()
+        elif isinstance(io_pool, int):
+            self._io_pool = mp.pool.ThreadPool(io_pool)
+        else:
+            self._io_pool = io_pool
+
+        if computation_pool is None:
+            self._computation_pool = mp.pool.ThreadPool()
+        elif isinstance(computation_pool, int):
+            self._computation_pool = mp.pool.ThreadPool(computation_pool)
+        else:
+            self._computation_pool = computation_pool
+
+        if merge_pool is None:
+            self._merge_pool = mp.pool.ThreadPool()
+        elif isinstance(merge_pool, int):
+            self._merge_pool = mp.pool.ThreadPool(merge_pool)
+        else:
+            self._merge_pool = merge_pool
+
         self._primitives = primitives
         self._to_collect_of_to_compute = to_collect_of_to_compute
 
@@ -61,11 +84,24 @@ class Raster(object):
         self._scheduler_thread = threading.Thread(target=self._scheduler, daemon=True)
         self._scheduler_thread.start()
 
-        self._merge_pool = mp.pool.ThreadPool()
-
         self._thread_storage = threading.local()
 
         self._graph = nx.DiGraph()
+
+        def default_merge_data(out_fp, out_data, in_fps, in_arrays):
+            """
+            Defeult merge function: burning
+            """
+            if len(out_data.shape) == 3 and out_data.shape[2] == 1:
+                out_data = out_data.squeeze(axis=-1)
+            for to_burn_fp, to_burn_data in zip(in_fps, in_arrays):
+                out_data[to_burn_fp.slice_in(out_fp, clip=True)] = to_burn_data[out_fp.slice_in(to_burn_fp, clip=True)]
+            return out_data
+
+        if merge_function is None:
+            self._merge_data = default_merge_data
+        else:
+            self._merge_data = merge_function
 
         # Used to keep duplicates in to_produce
         self._to_produce_in_occurencies_dict = defaultdict(int)
@@ -131,12 +167,6 @@ class Raster(object):
             to_fill_data = to_fill_data.squeeze(axis=-1)
         to_fill_data[to_burn_fp.slice_in(big_fp, clip=True)] = to_burn_data[big_fp.slice_in(to_burn_fp, clip=True)]
 
-    def _merge_data(self, out_fp, out_data, in_fps, in_arrays):
-        if len(out_data.shape) == 3 and out_data.shape[2] == 1:
-            out_data = out_data.squeeze(axis=-1)
-        for to_burn_fp, to_burn_data in zip(in_fps, in_arrays):
-            out_data[to_burn_fp.slice_in(out_fp, clip=True)] = to_burn_data[out_fp.slice_in(to_burn_fp, clip=True)]
-        return out_data
 
 
     def _scheduler(self):
@@ -449,7 +479,7 @@ class Raster(object):
                     self._graph.add_edge(to_produce_uid, to_compute_uid)
                 else:
                     self._graph.add_edge(to_merge_uid, to_compute_uid)
-                
+
                 if self._to_collect_of_to_compute is None:
                     continue
                 multi_to_collect = self._to_collect_of_to_compute(to_compute)
@@ -530,26 +560,34 @@ class CachedRaster(Raster):
                  nodata,
                  srs,
                  computation_function,
+                 overwrite,
                  cache_dir,
                  cache_fps,
                  io_pool,
                  computation_pool,
                  primitives,
                  to_collect_of_to_compute,
-                 to_compute_fps):
+                 computation_tiles,
+                 merge_pool,
+                 merge_function):
 
         super().__init__(footprint, dtype, nbands, nodata, srs,
                          computation_function,
                          io_pool,
                          computation_pool,
                          primitives,
-                         to_collect_of_to_compute
+                         to_collect_of_to_compute,
+                         computation_tiles,
+                         merge_pool,
+                         merge_function
                         )
-
-        self._computation_tiles = to_compute_fps
 
         self._cache_dir = cache_dir
         self._cache_tiles = cache_fps
+
+        if overwrite:
+            shutil.rmtree(cache_dir)
+            os.makedirs(cache_dir, exist_ok=True)
 
         # Array used to track the state of cahce tiles:
         # None: not yet met
@@ -811,21 +849,22 @@ class CachedRaster(Raster):
 
 
 def raster_factory(footprint,
-                   dtype,
-                   nbands,
-                   nodata,
-                   srs,
-                   computation_function,
-                   cached,
-                   cache_dir,
-                   cache_fps,
-                   io_pool,
-                   computation_pool,
-                   primitives,
-                   to_collect_of_to_compute,
-                   to_compute_fps,
-                   merge_pool,
-                   merge_function):
+                   dtype='float32',
+                   nbands=1,
+                   nodata=None,
+                   srs=None,
+                   computation_function=None,
+                   cached=False,
+                   overwrite=False,
+                   cache_dir=None,
+                   cache_fps=None,
+                   io_pool=None,
+                   computation_pool=None,
+                   primitives={},
+                   to_collect_of_to_compute=None,
+                   computation_fps=None,
+                   merge_pool=None,
+                   merge_function=None):
     """
     creates a raster from arguments
     """
@@ -838,13 +877,16 @@ def raster_factory(footprint,
                               nodata,
                               srs,
                               computation_function,
+                              overwrite,
                               cache_dir,
                               cache_fps,
                               io_pool,
                               computation_pool,
                               primitives,
                               to_collect_of_to_compute,
-                              to_compute_fps
+                              computation_fps,
+                              merge_pool,
+                              merge_function
                              )
     else:
         raster = Raster(footprint,
@@ -856,7 +898,10 @@ def raster_factory(footprint,
                         io_pool,
                         computation_pool,
                         primitives,
-                        to_collect_of_to_compute
+                        to_collect_of_to_compute,
+                        computation_fps,
+                        merge_pool,
+                        merge_function
                        )
 
     return raster
