@@ -12,4 +12,4 @@ class Query(object):
         self.produced = weakref.ref(queue)
 
         self.to_collect = {}
-        self.collected = []
+        self.collected = {}

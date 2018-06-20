@@ -11,7 +11,6 @@ import time
 from collections import defaultdict
 import glob
 import shutil
-import weakref
 import sys
 import queue
 
@@ -177,7 +176,7 @@ class Raster(object):
     def _scheduler(self):
         print(self.__class__.__name__, " scheduler in ", threading.currentThread().getName())
         # list of available and produced to_collect footprints
-        to_collect_batch = {key: [] for key in self._primitives.keys()}
+        available_to_collect = {key: [] for key in self._primitives.keys()}
         while True:
             time.sleep(1e-2)
 
@@ -234,8 +233,8 @@ class Raster(object):
                 for node_id in depth_node_ids:
                     node = self._graph.nodes[node_id]
                     # for each to collect, appending the footprint to the batch
-                    if node["type"] == "to_collect" and node["footprint"] not in to_collect_batch[node["primitive"]]:
-                        to_collect_batch[node["primitive"]].append(node["footprint"])
+                    if node["type"] == "to_collect" and node["footprint"] not in available_to_collect[node["primitive"]]:
+                        available_to_collect[node["primitive"]].append(node["footprint"])
 
                 # updating the to_produce status
                 query.to_produce[query.to_produce.index((to_produce_available, "sleeping"))] = (to_produce_available, "pending")
@@ -256,7 +255,7 @@ class Raster(object):
 
                 too_many_tasks = threadPoolTaskCounter[id(self._computation_pool)] >= self._computation_pool._processes
                 # if they are all not empty and can be collected without saturation
-                if not one_is_empty and query.to_collect[prim][0] in to_collect_batch[prim] and not too_many_tasks:
+                if not one_is_empty and query.to_collect[prim][0] in available_to_collect[prim] and not too_many_tasks:
                     # getting all the collected data
                     collected_data = []
                     for collected_primitive in query.collected.keys():
