@@ -184,6 +184,7 @@ class Raster(object):
             if not self._queries:
                 continue
 
+            # Consuming the new queries
             while self._new_queries:
                 print(self.__class__.__name__, " updating graph ", threading.currentThread().getName())
                 new_query = self._new_queries.pop(0)
@@ -196,16 +197,16 @@ class Raster(object):
             # getting the emptiest query
             query = ordered_queries[0]
 
-            if query is None:
-                try:
-                    to_delete_edges = nx.dfs_edges(self._graph, source=id(ordered_queries[0]))
-                    self._graph.remove_edges_from(to_delete_edges)
-                except:
-                    pass
-                finally:
-                    self._queries.remove(ordered_queries[0])
+            # If the query has been dropped
+            if query.produced() is None:
+                self._num_pending[query] = 0
+                to_delete_edges = nx.dfs_edges(self._graph, source=id(ordered_queries[0]))
+                self._graph.remove_edges_from(to_delete_edges)
+                self._graph.remove_node(id(ordered_queries[0]))
+                self._queries.remove(ordered_queries[0])
                 continue
 
+            # If all to_produced was consumed: query ended
             if not query.to_produce:
                 self._num_pending[query] = 0
                 self._queries.remove(ordered_queries[0])
@@ -314,11 +315,13 @@ class Raster(object):
 
                                 if len(node["data"].shape) == 3 and node["data"].shape[2] == 1:
                                     node["data"] = node["data"].squeeze(axis=-1)
-                                query.produced().put(node["data"].astype(self._dtype), timeout=1e-2)
+                                # If the query has not been dropped
+                                if query.produced() is not None:
+                                    query.produced().put(node["data"].astype(self._dtype), timeout=1e-2)
                                 query.to_produce.pop(0)
 
                                 self._to_produce_out_occurencies_dict[to_produce[0]] += 1
-                                self._graph.remove_edge(id(query), node_id)
+                                self._graph.remove_node(node_id)
 
                                 self._num_pending[id(query)] -= 1
 

@@ -105,18 +105,19 @@ def main():
         )
 
     tile_count = np.ceil(full_fp.rsize / 1000)
-    tiles = full_fp.tile_count(7,7)
+    tiles = full_fp.tile_count(50,50)
 
     print(tile_count)
 
-    for array, fp in zip(dot_raster.get_multi_data(tiles.flat), tiles.flat):
-        plt.imshow(array)
-        plt.show()
-        gc.collect()
+    # for array, fp in zip(dot_raster.get_multi_data(tiles.flat), tiles.flat):
+    #     plt.imshow(array)
+    #     plt.show()
+    #     gc.collect()
 
-    # a = dot_raster.get_multi_data(tiles.flat)
-    # del a
-    # input()
+    a = dot_raster.get_multi_data(tiles.flat)
+    # time.sleep(5)
+    del a
+    input()
 
 if __name__ == "__main__":
     main()
