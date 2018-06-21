@@ -47,7 +47,7 @@ CACHE_DIR = "./.cache"
 
 
 g_io_pool = mp.pool.ThreadPool()
-g_cpu_pool = mp.pool.ThreadPool()
+g_cpu_pool = mp.pool.Pool()
 g_merge_pool = mp.pool.ThreadPool()
 g_gpu_pool = mp.pool.ThreadPool(1)
 

@@ -12,7 +12,7 @@ import scipy.ndimage as ndi
 import matplotlib.pyplot as plt
 
 def main():
-    g_cpu_pool = mp.pool.ThreadPool()
+    g_cpu_pool = mp.pool.Pool()
     g_io_pool = mp.pool.ThreadPool()
     g_merge_pool = mp.pool.ThreadPool()
     full_fp = buzz.Footprint(tl=(0, 0), size=(12691, 12691), rsize=(126910, 126910))

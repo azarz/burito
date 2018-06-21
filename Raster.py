@@ -21,6 +21,7 @@ import buzzard as buzz
 from Query import Query
 from SingletonCounter import SingletonCounter
 from checksum import checksum, checksum_file
+from context_management import GetDataWithPrimitive
 
 threadPoolTaskCounter = SingletonCounter()
 
@@ -64,9 +65,9 @@ class Raster(object):
             self._io_pool = io_pool
 
         if computation_pool is None:
-            self._computation_pool = mp.pool.ThreadPool()
+            self._computation_pool = mp.pool.Pool()
         elif isinstance(computation_pool, int):
-            self._computation_pool = mp.pool.ThreadPool(computation_pool)
+            self._computation_pool = mp.pool.Pool(computation_pool)
         else:
             self._computation_pool = computation_pool
 
@@ -77,7 +78,12 @@ class Raster(object):
         else:
             self._merge_pool = merge_pool
 
-        self._primitives = primitives
+        self._primitive_functions = primitives
+        self._primitive_rasters = {
+            key: (primitives[key].primitive if hasattr(primitives[key], "primitive") else None)
+            for key in primitives
+        }
+
         self._to_collect_of_to_compute = to_collect_of_to_compute
 
         self._computation_tiles = computation_tiles
@@ -159,6 +165,10 @@ class Raster(object):
         """
         return self._full_fp.pxsizex
 
+    @property
+    def primitives(self):
+        return copy(self._primitive_rasters)
+    
 
 
     def __len__(self):
@@ -176,7 +186,7 @@ class Raster(object):
     def _scheduler(self):
         print(self.__class__.__name__, " scheduler in ", threading.currentThread().getName())
         # list of available and produced to_collect footprints
-        available_to_collect = {key: [] for key in self._primitives.keys()}
+        available_to_collect = {key: [] for key in self._primitive_functions.keys()}
         while True:
             time.sleep(1e-2)
 
@@ -244,14 +254,14 @@ class Raster(object):
 
             # testing if at least 1 of the collected queues is empty (1 queue per primitive)
             one_is_empty = False
-            for primitive in self._primitives.keys():
+            for primitive in self._primitive_functions.keys():
                 collected_primitive = query.collected[primitive]
                 if collected_primitive.empty():
                     one_is_empty = True
 
             # if threre are primitives
-            if list(self._primitives.keys()):
-                prim = list(self._primitives.keys())[0]
+            if list(self._primitive_functions.keys()):
+                prim = list(self._primitive_functions.keys())[0]
 
                 too_many_tasks = threadPoolTaskCounter[id(self._computation_pool)] >= self._computation_pool._processes
                 # if they are all not empty and can be collected without saturation
@@ -262,7 +272,7 @@ class Raster(object):
                         collected_data.append(query.collected[collected_primitive].get(block=False))
 
                     # for each graph edge out of the collected, applying the asyncresult to the out node
-                    for prim in self._primitives.keys():
+                    for prim in self._primitive_functions.keys():
                         try:
                             collect_in_edges = self._graph.copy().in_edges(_get_graph_uid(
                                 query.to_collect[prim][0],
@@ -409,8 +419,8 @@ class Raster(object):
         """
         print(self.__class__.__name__, " collecting ", threading.currentThread().getName())
         results = {}
-        for primitive in self._primitives.keys():
-            results[primitive] = self._primitives[primitive](to_collect[primitive])
+        for primitive in self._primitive_functions.keys():
+            results[primitive] = self._primitive_functions[primitive](to_collect[primitive])
         return results
 
     def _to_compute_of_to_produce(self, fp):
@@ -435,7 +445,7 @@ class Raster(object):
         # with p # of primitives and n # of to_compute fps
 
         # initializing to_collect dictionnary
-        new_query.to_collect = {key: [] for key in self._primitives.keys()}
+        new_query.to_collect = {key: [] for key in self._primitive_functions.keys()}
 
         self._graph.add_node(
             id(new_query)
@@ -518,21 +528,29 @@ class Raster(object):
 
 
 
-    def get_multi_data_queue(self, fp_iterable, queue_size=5):
+    @property
+    def get_multi_data_queue(self):
         """
-        returns a queue (could be generator) from a fp_iterable
+        returns a queue from a fp_iterable and can manage the context of the method
         """
-        fp_iterable = list(fp_iterable)
-        q = queue.Queue(queue_size)
-        query = Query(q)
-        to_produce = [(fp, "sleeping") for fp in fp_iterable]
 
-        query.to_produce += to_produce
+        def _get_multi_data_queue(fp_iterable, queue_size=5):
+            """
+            returns a queue from a fp_iterable
+            """
+            fp_iterable = list(fp_iterable)
+            q = queue.Queue(queue_size)
+            query = Query(q)
+            to_produce = [(fp, "sleeping") for fp in fp_iterable]
 
-        self._queries.append(query)
-        self._new_queries.append(query)
+            query.to_produce += to_produce
 
-        return q
+            self._queries.append(query)
+            self._new_queries.append(query)
+
+            return q
+
+        return GetDataWithPrimitive(self, _get_multi_data_queue)
 
 
     def get_multi_data(self, fp_iterable, queue_size=5):
@@ -740,7 +758,7 @@ class CachedRaster(Raster):
         # with p # of primitives and n # of to_compute fps
 
         # initializing to_collect dictionnary
-        new_query.to_collect = {key: [] for key in self._primitives.keys()}
+        new_query.to_collect = {key: [] for key in self._primitive_functions.keys()}
 
         self._graph.add_node(
             id(new_query)
