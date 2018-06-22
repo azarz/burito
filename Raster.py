@@ -167,8 +167,11 @@ class Raster(object):
 
     @property
     def primitives(self):
-        return copy(self._primitive_rasters)
-    
+        """
+        Returns dictionnary of raster primitives
+        """
+        return self._primitive_rasters.copy()
+
 
 
     def __len__(self):

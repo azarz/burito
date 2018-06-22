@@ -1,16 +1,17 @@
-""">>> help(CallOrContext)"""
+"""Used to retrieve the context of a get_multi_data_queue function"""
 
-class CallOrContext(object):
-    """Private helper class to provide a common behaviour both on call and on exit"""
+class GetDataWithPrimitive(object):
+    """Used to retrieve the context of a get_multi_data_queue function"""
     def __init__(self, obj, routine):
-        self._obj = obj
+        self._primitive = obj
         self._routine = routine
 
     def __call__(self):
         self._routine()
 
-    def __enter__(self):
-        return self._obj
-
-    def __exit__(self, *args, **kwargs):
-        self._routine()
+    @property
+    def primitive(self):
+        """
+        Returns the primitive raster
+        """
+        return self._primitive
