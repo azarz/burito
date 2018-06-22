@@ -20,26 +20,25 @@ def main():
     def compute_data(fp, *args):
         return np.random.rand(fp.shape[0], fp.shape[1])
 
-    def gaussian_filter(fp, *data):
-        array, = data
+    def gaussian_filter(fp, data, *args):
+        array = data[0]
         assert np.array_equal(fp.shape, array.shape)
         return ndi.gaussian_filter(array, 0.5)
 
-    def median_filter(fp, *data):
-        array, = data
+    def median_filter(fp, data, *args):
+        array = data[0]
         return ndi.median_filter(array, size=5)
 
-    def sobel_filter(fp, *data):
-        array, = data
+    def sobel_filter(fp, data, *args):
+        array = data[0]
         return ndi.sobel(array)
 
-    def summ(fp, *data):
-        array1, array2 = data
+    def summ(fp, data, *args):
+        array1, array2 = data[0], data[1]
         return array1 + array2
 
-    def dot(fp, *data):
-        array1, array2 = data
-
+    def dot(fp, data, *args):
+        array1, array2 = data[0], data[1]
         return (array1 + array2)**0.5
  
     random_raster = raster_factory(footprint=full_fp,

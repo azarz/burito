@@ -68,7 +68,7 @@ def resampled_raster(raster, scale, cache_dir, cache_fps):
 
     thread_storage = threading.local()
 
-    def compute_data(compute_fp, *data): #*prim_footprints?
+    def compute_data(compute_fp, *args):
         """
         resampled raster compted data when collecting. this is a particular case
         """
@@ -81,8 +81,6 @@ def resampled_raster(raster, scale, cache_dir, cache_fps):
 
         with ds.open_araster(raster.path).close as prim:
             got_data = prim.get_data(compute_fp, band=-1)
-
-        assert len(data) == 1
 
         return got_data
 
@@ -117,12 +115,12 @@ def slopes_raster(dsm):
     nodata = dsm.nodata
     full_fp = dsm.fp
 
-    def compute_data(compute_fp, *data):
+    def compute_data(compute_fp, input_data, input_fps, selfraster):
         """
         computes up and down slopes
         """
         print("slopes computing", threading.currentThread().getName())
-        arr, = data
+        arr = input_data[0]
         assert arr.shape == tuple(compute_fp.dilate(1).shape)
         nodata_mask = arr == nodata
         nodata_mask = ndi.binary_dilation(nodata_mask)
@@ -153,7 +151,6 @@ def slopes_raster(dsm):
         """
         return {"dsm": fp.dilate(1)}
 
-    
     primitives = {"dsm": dsm.get_multi_data_queue}
     nodata = dsm.nodata
     num_bands = 2
@@ -189,12 +186,12 @@ def heatmap_raster(model, resampled_rgba, slopes, cache_dir, cache_fps):
         slope_tile = output_fp_to_input_fp(fp, 1.28, model.get_layer("slopes").input_shape[1])
         return {"rgba": rgba_tile, "slopes": slope_tile}
 
-    def compute_data(compute_fp, *data):
+    def compute_data(compute_fp, input_data, input_fps, selfraster):
         """
         predicts data using model
         """
         print(">>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>")
-        rgba_data, slope_data = data
+        rgba_data, slope_data = input_data[0], input_data[1]
 
         rgb_data = np.where((rgba_data[..., 3] == 255)[..., np.newaxis], rgba_data, 0)[..., 0:3]
         rgb = (rgb_data.astype('float32') - 127.5) / 127.5

@@ -263,44 +263,45 @@ class Raster(object):
                 if collected_primitive.empty():
                     one_is_empty = True
 
-            # if threre are primitives
-            if list(self._primitive_functions.keys()):
-                prim = list(self._primitive_functions.keys())[0]
+            # TODO: indifférent si primitives ou pas
+            prim = list(self._primitive_functions.keys())[0]
 
-                too_many_tasks = threadPoolTaskCounter[id(self._computation_pool)] >= self._computation_pool._processes
-                # if they are all not empty and can be collected without saturation
-                if not one_is_empty and query.to_collect[prim][0] in available_to_collect[prim] and not too_many_tasks:
-                    # getting all the collected data
-                    collected_data = []
-                    for collected_primitive in query.collected.keys():
-                        collected_data.append(query.collected[collected_primitive].get(block=False))
+            too_many_tasks = threadPoolTaskCounter[id(self._computation_pool)] >= self._computation_pool._processes
+            # if they are all not empty and can be collected without saturation
+            if not one_is_empty and query.to_collect[prim][0] in available_to_collect[prim] and not too_many_tasks:
+                # getting all the collected data
+                collected_data = []
+                primitive_footprints = []
 
-                    # for each graph edge out of the collected, applying the asyncresult to the out node
-                    for prim in self._primitive_functions.keys():
-                        try:
-                            collect_in_edges = self._graph.copy().in_edges(_get_graph_uid(
-                                query.to_collect[prim][0],
-                                "to_collect" + prim + str(id(query))
-                            ))
+                # retrieveing the in edges of the first primitive (and the other primitives too consequently)
+                collect_in_edges = self._graph.copy().in_edges(_get_graph_uid(
+                    query.to_collect[prim][0],
+                    "to_collect" + prim + str(id(query))
+                ))
 
-                            for edge in collect_in_edges:
-                                compute_node = self._graph.nodes[edge[0]]
-                                threadPoolTaskCounter[id(self._computation_pool)] += 1
-                                compute_node["future"] = self._computation_pool.apply_async(
-                                    self._compute_data,
-                                    (
-                                        self._graph.nodes[edge[0]]["footprint"],
-                                        *collected_data
-                                    )
-                                )
-                                compute_out_edges = self._graph.copy().out_edges(edge[0])
-                                for to_remove_edge in compute_out_edges:
-                                    self._graph.remove_edge(*to_remove_edge)
-                        except nx.NetworkXError:
-                            pass
-                        finally:
-                            query.to_collect[prim].pop(0)
-                    continue
+                # retrieving the data and footprints
+                for collected_primitive in query.collected.keys():
+                    collected_data.append(query.collected[collected_primitive].get(block=False))
+                    primitive_footprints.append(query.to_collect[collected_primitive].pop(0))
+
+                # applying the async result
+                for edge in collect_in_edges:
+                    compute_node = self._graph.nodes[edge[0]]
+                    threadPoolTaskCounter[id(self._computation_pool)] += 1
+                    compute_node["future"] = self._computation_pool.apply_async(
+                        self._compute_data,
+                        (
+                            self._graph.nodes[edge[0]]["footprint"],
+                            collected_data,
+                            primitive_footprints,
+                            self
+                        )
+                    )
+                    compute_out_edges = self._graph.copy().out_edges(edge[0])
+                    for to_remove_edge in compute_out_edges:
+                        self._graph.remove_edge(*to_remove_edge)
+
+                continue
 
             # iterating through the graph
             for index, to_produce in enumerate(query.to_produce):
@@ -317,7 +318,7 @@ class Raster(object):
                         if len(self._graph.out_edges(node_id)) > 0:
                             continue
 
-                        # should not happen, but not fata if happens
+                        # should not happen, but not fatal if happens
                         if node["type"] == "to_collect":
                             continue
 

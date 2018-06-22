@@ -15,7 +15,7 @@ def test_simple_raster():
     io_pool = mp.pool.ThreadPool(1)
     footprint = buzz.Footprint(tl=(0, 0), size=(10, 10), rsize=(10, 10))
 
-    def compute_data(fp, *data):
+    def compute_data(fp, *args):
         return np.zeros(fp.shape)
 
     simple_raster = raster_factory(
@@ -35,13 +35,13 @@ def test_complicated_raster_dependencies():
     io_pool = mp.pool.ThreadPool(6)
     footprint = buzz.Footprint(tl=(0, 0), size=(10, 10), rsize=(10, 10))
     
-    def ones(fp, *data):
+    def ones(fp, *args):
         return np.ones(fp.shape)
 
-    def twos(fp, *data):
+    def twos(fp, *args):
         return 2*np.ones(fp.shape)
 
-    def arange(fp, *data):
+    def arange(fp, *args):
         return np.arange(fp.shape[0]*fp.shape[1]).reshape(fp.shape)
 
     def summ(fp, *data):
@@ -124,5 +124,10 @@ def test_complicated_raster_dependencies():
     assert diff_array[0, 1] == -2
     assert prod_array[0, 1] == 2
 
+
+
+
+
+
 if __name__ == '__main__':
-    test_complicated_raster_dependencies()
+    test_simple_raster()
