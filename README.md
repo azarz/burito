@@ -1,6 +1,6 @@
 # airware-internship
 
-## Vocabulary:
+## Vocabulary:
 For a given request to a raster:
 	Requested fps: to_produce (list)
 	Returned queue: produced (queue)
@@ -10,7 +10,7 @@ For a given request to a raster:
 	Primitive tiles to collect: to_collect (dict of lists)
 	Primitive tiles returned: collected (dict of queues)
 
-## Specifications:
+## Specifications:
 
 - Finish jobs as fast as possible
 	+ Do not compute expensive pixels twice
