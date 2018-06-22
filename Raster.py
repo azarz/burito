@@ -21,7 +21,7 @@ import buzzard as buzz
 from Query import Query
 from SingletonCounter import SingletonCounter
 from checksum import checksum, checksum_file
-from context_management import GetDataWithPrimitive
+from GetDataWithPrimitive import GetDataWithPrimitive
 
 threadPoolTaskCounter = SingletonCounter()
 
@@ -65,9 +65,9 @@ class Raster(object):
             self._io_pool = io_pool
 
         if computation_pool is None:
-            self._computation_pool = mp.pool.Pool()
+            self._computation_pool = mp.pool.ThreadPool()
         elif isinstance(computation_pool, int):
-            self._computation_pool = mp.pool.Pool(computation_pool)
+            self._computation_pool = mp.pool.ThreadPool(computation_pool)
         else:
             self._computation_pool = computation_pool
 

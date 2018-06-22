@@ -12,7 +12,7 @@ import scipy.ndimage as ndi
 import matplotlib.pyplot as plt
 
 def main():
-    g_cpu_pool = mp.pool.Pool()
+    g_cpu_pool = mp.pool.ThreadPool()
     g_io_pool = mp.pool.ThreadPool()
     g_merge_pool = mp.pool.ThreadPool()
     full_fp = buzz.Footprint(tl=(0, 0), size=(12691, 12691), rsize=(126910, 126910))
@@ -105,14 +105,14 @@ def main():
         )
 
     tile_count = np.ceil(full_fp.rsize / 1000)
-    tiles = full_fp.tile_count(50,50)
+    tiles = full_fp.tile_count(6,6)
 
     print(tile_count)
 
-    # for array, fp in zip(dot_raster.get_multi_data(tiles.flat), tiles.flat):
-    #     plt.imshow(array)
-    #     plt.show()
-    #     gc.collect()
+    for array, fp in zip(dot_raster.get_multi_data(tiles.flat), tiles.flat):
+        plt.imshow(array)
+        plt.show()
+        gc.collect()
 
     a = dot_raster.get_multi_data(tiles.flat)
     # time.sleep(5)
