@@ -1,0 +1,4 @@
+[
+  "test_raster.py::test_simple_raster",
+  "test_raster.py::test_complicated_raster_dependencies"
+]

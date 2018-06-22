@@ -18,10 +18,10 @@ import numpy as np
 import networkx as nx
 import buzzard as buzz
 
-from Query import Query
-from SingletonCounter import SingletonCounter
-from checksum import checksum, checksum_file
-from GetDataWithPrimitive import GetDataWithPrimitive
+from rammuth.query import Query
+from rammuth.singleton_counter import SingletonCounter
+from rammuth.checksum import checksum, checksum_file
+from rammuth.get_data_with_primitive import GetDataWithPrimitive
 
 threadPoolTaskCounter = SingletonCounter()
 
@@ -126,6 +126,8 @@ class Raster(object):
         """
         defines a pressure ration of a query: lesser values -> emptier query
         """
+        if query.produced() is None:
+            return -1
         num = query.produced().qsize() + self._num_pending[id(query)]
         den = query.produced().maxsize
         return num/den
@@ -209,6 +211,12 @@ class Raster(object):
             # getting the emptiest query
             query = ordered_queries[0]
 
+            # If all to_produced was consumed: query ended
+            if not query.to_produce:
+                self._num_pending[query] = 0
+                self._queries.remove(ordered_queries[0])
+                continue
+
             # If the query has been dropped
             if query.produced() is None:
                 self._num_pending[query] = 0
@@ -216,13 +224,6 @@ class Raster(object):
                 self._graph.remove_edges_from(to_delete_edges)
                 self._graph.remove_node(id(ordered_queries[0]))
                 self._queries.remove(ordered_queries[0])
-                continue
-
-            # If all to_produced was consumed: query ended
-            if not query.to_produce:
-                self._num_pending[query] = 0
-                self._queries.remove(ordered_queries[0])
-                self._graph.remove_node(id(ordered_queries[0]))
                 continue
 
             # if the emptiest query is full, waiting
@@ -405,7 +406,6 @@ class Raster(object):
         """
         # Used to keep duplicates in to_produce
         to_remove = list(nx.isolates(self._graph))
-
         self._graph.remove_nodes_from(to_remove)
 
 
@@ -666,6 +666,7 @@ class CachedRaster(Raster):
             cache_path = cache_tile_path[0]
             checksum_dot_tif = cache_path.split('_')[-1]
             file_checksum = checksum_dot_tif.split('.')[0]
+            print(cache_path)
 
             if int(file_checksum, base=16) == checksum_file(cache_path):
                 return True
@@ -730,7 +731,7 @@ class CachedRaster(Raster):
         """
         print(self.__class__.__name__, " writing ", threading.currentThread().getName())
         cs = checksum(data)
-        filepath = self._get_cache_tile_path_prefix(cache_tile) + "_" + f'`{cs:#010x}`' + ".tif"
+        filepath = self._get_cache_tile_path_prefix(cache_tile) + "_" + f'{cs:#010x}' + ".tif"
         if not hasattr(self._thread_storage, "ds"):
             ds = buzz.DataSource(allow_interpolation=True)
             self._thread_storage.ds = ds

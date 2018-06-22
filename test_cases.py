@@ -1,4 +1,4 @@
-from Raster import raster_factory
+from raster import raster_factory
 import buzzard as buzz
 import queue
 import numpy as np
@@ -105,11 +105,11 @@ def main():
         )
 
     tile_count = np.ceil(full_fp.rsize / 1000)
-    tiles = full_fp.tile_count(6,6)
+    tiles = full_fp.tile_count(50,50)
 
     print(tile_count)
 
-    for array, fp in zip(dot_raster.get_multi_data(tiles.flat), tiles.flat):
+    for array, fp in zip(dot_raster.get_multi_data(tiles.flat[0:3]), tiles.flat[0:3]):
         plt.imshow(array)
         plt.show()
         gc.collect()

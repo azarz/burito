@@ -11,11 +11,11 @@ import scipy.ndimage as ndi
 import numpy as np
 import buzzard as buzz
 
-from show_many_images import show_many_images
-from uids_of_paths import uids_of_paths
+from rammuth.show_many_images import show_many_images
+from rammuth.uids_of_paths import uids_of_paths
 
-from Raster import raster_factory
-from output_fp_to_input_fp import output_fp_to_input_fp
+from rammuth.raster import raster_factory
+from rammuth.output_fp_to_input_fp import output_fp_to_input_fp
 
 CATEGORIES = (
     #0        1       2        3        4
@@ -47,7 +47,7 @@ CACHE_DIR = "./.cache"
 
 
 g_io_pool = mp.pool.ThreadPool()
-g_cpu_pool = mp.pool.Pool()
+g_cpu_pool = mp.pool.ThreadPool()
 g_merge_pool = mp.pool.ThreadPool()
 g_gpu_pool = mp.pool.ThreadPool(1)
 
