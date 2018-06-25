@@ -11,11 +11,11 @@ import scipy.ndimage as ndi
 import numpy as np
 import buzzard as buzz
 
-from rammuth.show_many_images import show_many_images
-from rammuth.uids_of_paths import uids_of_paths
+from burito.show_many_images import show_many_images
+from burito.uids_of_paths import uids_of_paths
 
-from rammuth.raster import raster_factory
-from rammuth.output_fp_to_input_fp import output_fp_to_input_fp
+from burito.raster import raster_factory
+from burito.output_fp_to_input_fp import output_fp_to_input_fp
 
 CATEGORIES = (
     #0        1       2        3        4

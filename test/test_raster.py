@@ -7,7 +7,7 @@ import multiprocessing as mp
 import multiprocessing.pool
 import buzzard as buzz
 
-from rammuth.raster import raster_factory
+from burito.raster import raster_factory
 
 
 def test_simple_raster():

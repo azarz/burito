@@ -13,20 +13,71 @@ import glob
 import shutil
 import sys
 import queue
+import itertools
 
 import numpy as np
 import networkx as nx
 import buzzard as buzz
+from rtree import index
 
-from rammuth.query import Query
-from rammuth.singleton_counter import SingletonCounter
-from rammuth.checksum import checksum, checksum_file
-from rammuth.get_data_with_primitive import GetDataWithPrimitive
+from burito.query import Query
+from burito.singleton_counter import SingletonCounter
+from burito.checksum import checksum, checksum_file
+from burito.get_data_with_primitive import GetDataWithPrimitive
 
 threadPoolTaskCounter = SingletonCounter()
 
 def _get_graph_uid(fp, _type):
     return hash(repr(fp) + _type)
+
+
+
+
+def is_tiling_valid(fp, tiles):
+    tiles = list(tiles)
+    assert isinstance(tiles[0], buzz.Footprint)
+
+    if any(not tile.same_grid(fp) for tile in tiles):
+        return False
+
+    idx = index.Index()
+    bound_inset = np.r_[
+        1 / 4,
+        1 / 4,
+        -1 / 4,
+        -1 / 4,
+    ]
+
+    tls = fp.spatial_to_raster([tile.tl for tile in tiles])
+    rsizes = np.array([tile.rsize for tile in tiles])
+
+    if np.any(tls < 0):
+        return False
+
+    if np.any(tls[:, 0] + rsizes[:, 0] > fp.rw):
+        return False
+
+    if np.any(tls[:, 1] + rsizes[:, 1] > fp.rh):
+        return False
+
+    if np.prod(rsizes, axis=0).sum() != fp.rarea:
+        return False
+
+    for i, (tl, rsize) in enumerate(zip(tls, rsizes)):
+        bounds = (*tl, *(tl + rsize))
+        bounds += bound_inset
+
+        if len(list(idx.intersection(bounds))) > 0:
+            return False
+
+        else:
+            idx.insert(i, bounds)
+
+    return True
+
+
+
+
 
 
 class Raster(object):
@@ -617,6 +668,8 @@ class CachedRaster(Raster):
         self._cache_dir = cache_dir
         self._cache_tiles = cache_fps
 
+        assert is_tiling_valid(footprint, cache_fps.flat)
+
         if overwrite:
             shutil.rmtree(cache_dir)
             os.makedirs(cache_dir, exist_ok=True)
@@ -683,13 +736,12 @@ class CachedRaster(Raster):
             "fullsize_{:05d}_{:05d}_tilesize_{:05d}_{:05d}_tilepxindex_{:05d}_{:05d}_tileindex_{:05d}_{:05d}".format(
                 *self._full_fp.rsize,
                 *cache_tile.rsize,
-                # cache_tile.tl[0]/cache_tile.pxsizex - self._full_fp.tl[0]/cache_tile.pxsizex,
-                # self._full_fp.tl[1]/cache_tile.pxsizex - cache_tile.tl[1]/cache_tile.pxsizex,
                 *self._full_fp.spatial_to_raster(cache_tile.tl),
                 tile_index[0][0],
                 tile_index[1][0]
             )
         )
+        print(path)
         return path
 
 
