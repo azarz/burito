@@ -116,7 +116,7 @@ class Raster(object):
         # Used to keep duplicates in to_produce
         self._to_produce_in_occurencies_dict = defaultdict(int)
         self._to_produce_out_occurencies_dict = defaultdict(int)
-        self._to_produce_collect_occurencies_dict = defaultdict(int)
+        self._to_produce_available_occurencies_dict = defaultdict(int)
 
         # Used to track the number of pending tasks
         self._num_pending = defaultdict(int)
@@ -191,11 +191,11 @@ class Raster(object):
     def _scheduler(self):
         print(self.__class__.__name__, " scheduler in ", threading.currentThread().getName())
         # list of available and produced to_collect footprints
-        available_to_collect = {key: [] for key in self._primitive_functions.keys()}
+        available_to_produce = set()
         while True:
-            time.sleep(1e-2)
 
             if not self._queries:
+                time.sleep(1e-1)
                 continue
 
             # Consuming the new queries
@@ -230,7 +230,7 @@ class Raster(object):
             if query.produced().full():
                 continue
 
-            # detecting which footprints to collect from the queue + pending
+            # detecting which produce footprints are available
             # while there is space
             while query.produced().qsize() + self._num_pending[id(query)] < query.produced().maxsize and query.to_produce[-1][1] == "sleeping":
                 # getting the first sleeping to_produce
@@ -238,167 +238,149 @@ class Raster(object):
                 # getting its id in the graph
                 to_produce_available_id = _get_graph_uid(
                     to_produce_available,
-                    "to_produce" + str(self._to_produce_collect_occurencies_dict[to_produce_available])
+                    "to_produce" + str(self._to_produce_available_occurencies_dict[to_produce_available])
                 )
 
-                # getting the ids of the depth firsrt search
-                depth_node_ids = nx.dfs_postorder_nodes(self._graph.copy(), source=to_produce_available_id)
-
-                for node_id in depth_node_ids:
-                    node = self._graph.nodes[node_id]
-                    # for each to collect, appending the footprint to the batch
-                    if node["type"] == "to_collect" and node["footprint"] not in available_to_collect[node["primitive"]]:
-                        available_to_collect[node["primitive"]].append(node["footprint"])
-
-                # updating the to_produce status
+                available_to_produce.add(to_produce_available_id)
                 query.to_produce[query.to_produce.index((to_produce_available, "sleeping"))] = (to_produce_available, "pending")
 
                 self._num_pending[id(query)] += 1
-                self._to_produce_collect_occurencies_dict[to_produce_available] += 1
+                self._to_produce_available_occurencies_dict[to_produce_available] += 1
 
-            # testing if at least 1 of the collected queues is empty (1 queue per primitive)
-            one_is_empty = False
-            for primitive in self._primitive_functions.keys():
-                collected_primitive = query.collected[primitive]
-                if collected_primitive.empty():
-                    one_is_empty = True
-
-            # TODO: indifférent si primitives ou pas
-            prim = list(self._primitive_functions.keys())[0]
-
-            too_many_tasks = threadPoolTaskCounter[id(self._computation_pool)] >= self._computation_pool._processes
-            # if they are all not empty and can be collected without saturation
-            if not one_is_empty and query.to_collect[prim][0] in available_to_collect[prim] and not too_many_tasks:
-                # getting all the collected data
-                collected_data = []
-                primitive_footprints = []
-
-                # retrieveing the in edges of the first primitive (and the other primitives too consequently)
-                collect_in_edges = self._graph.copy().in_edges(_get_graph_uid(
-                    query.to_collect[prim][0],
-                    "to_collect" + prim + str(id(query))
-                ))
-
-                # retrieving the data and footprints
-                for collected_primitive in query.collected.keys():
-                    collected_data.append(query.collected[collected_primitive].get(block=False))
-                    primitive_footprints.append(query.to_collect[collected_primitive].pop(0))
-
-                # applying the async result
-                for edge in collect_in_edges:
-                    compute_node = self._graph.nodes[edge[0]]
-                    threadPoolTaskCounter[id(self._computation_pool)] += 1
-                    compute_node["future"] = self._computation_pool.apply_async(
-                        self._compute_data,
-                        (
-                            self._graph.nodes[edge[0]]["footprint"],
-                            collected_data,
-                            primitive_footprints,
-                            self
-                        )
-                    )
-                    compute_out_edges = self._graph.copy().out_edges(edge[0])
-                    for to_remove_edge in compute_out_edges:
-                        self._graph.remove_edge(*to_remove_edge)
-
-                continue
 
             # iterating through the graph
             for index, to_produce in enumerate(query.to_produce):
+
                 if to_produce[1] == "sleeping":
                     continue
-                else:
-                    # beginning at to_produce
-                    first_node_id = _get_graph_uid(to_produce[0], "to_produce" + str(self._to_produce_out_occurencies_dict[to_produce[0]]))
-                    # going as deep as possible
-                    depth_node_ids = nx.dfs_postorder_nodes(self._graph.copy(), source=first_node_id)
-                    for node_id in depth_node_ids:
-                        node = self._graph.nodes[node_id]
 
-                        if len(self._graph.out_edges(node_id)) > 0:
-                            continue
+                # beginning at to_produce
+                first_node_id = _get_graph_uid(to_produce[0], "to_produce" + str(self._to_produce_out_occurencies_dict[to_produce[0]]))
+                # going as deep as possible
+                depth_node_ids = nx.dfs_postorder_nodes(self._graph.copy(), source=first_node_id)
+                for node_id in depth_node_ids:
+                    node = self._graph.nodes[node_id]
 
-                        # should not happen, but not fatal if happens
-                        if node["type"] == "to_collect":
-                            continue
+                    # If there are out edges, not stopping (unless it is a compute node)
+                    if len(self._graph.out_edges(node_id)) > 0 and node["type"] != "to_compute":
+                        continue
 
-                        # if the deepest is to_produce, updating produced
-                        if index == 0 and node["type"] == "to_produce":
-                            not_ready_list = [future for future in node["futures"] if not future.ready()]
-                            if not not_ready_list:
+                    # Skipping the nodes not linked to available (pending) to_produce
+                    if available_to_produce.isdisjoint(node["linked_to_produce"]):
+                        continue
 
-                                if len(node["data"].shape) == 3 and node["data"].shape[2] == 1:
-                                    node["data"] = node["data"].squeeze(axis=-1)
-                                # If the query has not been dropped
-                                if query.produced() is not None:
-                                    query.produced().put(node["data"].astype(self._dtype), timeout=1e-2)
-                                query.to_produce.pop(0)
+                    # Skipping the collect
+                    if node["type"] == "to_collect":
+                        continue
 
-                                self._to_produce_out_occurencies_dict[to_produce[0]] += 1
-                                self._graph.remove_node(node_id)
+                    # if deepest is to_compute, collecting (if possible) and computing
+                    if node["type"] == "to_compute" and node["future"] is None:
+                        # testing if at least 1 of the collected queues is empty (1 queue per primitive)
+                        if any([query.collected[primitive].empty() for primitive in query.collected]):
+                            break
 
-                                self._num_pending[id(query)] -= 1
+                        collected_data = []
+                        primitive_footprints = []
 
-                            continue
+                        for collected_primitive in query.collected.keys():
+                            collected_data.append(query.collected[collected_primitive].get(block=False))
+                            primitive_footprints.append(query.to_collect[collected_primitive].pop(0))
 
-                        # skipping the ready to_produce that are not at index 0
-                        if node["type"] == "to_produce":
-                            continue
-
-                        if node["type"] == "to_merge" and node["future"] is None:
-                            if threadPoolTaskCounter[id(node["pool"])] < node["pool"]._processes:
-                                node["future"] = node["pool"].apply_async(
-                                    node["function"],
-                                    (
-                                        node["footprint"],
-                                        node["data"],
-                                        node["in_fp"],
-                                        node["in_data"]
-                                    )
+                        if threadPoolTaskCounter[id(node["pool"])] < node["pool"]._processes:
+                            threadPoolTaskCounter[id(self._computation_pool)] += 1
+                            node["future"] = self._computation_pool.apply_async(
+                                self._compute_data,
+                                (
+                                    node["footprint"],
+                                    collected_data,
+                                    primitive_footprints,
+                                    self
                                 )
-                                threadPoolTaskCounter[id(node["pool"])] += 1
-                            continue
+                            )
 
-                        in_edges = self._graph.copy().in_edges(node_id)
+                            compute_out_edges = list(self._graph.out_edges(node))
+                            for to_remove_edge in compute_out_edges:
+                                self._graph.remove_edge(*to_remove_edge)
 
-                        if node["future"] is None:
-                            if threadPoolTaskCounter[id(node["pool"])] < node["pool"]._processes:
-                                node["future"] = node["pool"].apply_async(
-                                    node["function"],
-                                    (
-                                        node["footprint"],
-                                        node["in_data"]
-                                    )
+                        continue
+
+                    # if the deepest is to_produce, updating produced
+                    if index == 0 and node["type"] == "to_produce":
+                        not_ready_list = [future for future in node["futures"] if not future.ready()]
+                        if not not_ready_list:
+
+                            if len(node["data"].shape) == 3 and node["data"].shape[2] == 1:
+                                node["data"] = node["data"].squeeze(axis=-1)
+                            # If the query has not been dropped
+                            if query.produced() is not None:
+                                query.produced().put(node["data"].astype(self._dtype), timeout=1e-2)
+                            query.to_produce.pop(0)
+
+                            self._to_produce_out_occurencies_dict[to_produce[0]] += 1
+                            self._graph.remove_node(node_id)
+
+                            self._num_pending[id(query)] -= 1
+
+                        continue
+
+                    # skipping the ready to_produce that are not at index 0
+                    if node["type"] == "to_produce":
+                        continue
+
+                    if node["type"] == "to_merge" and node["future"] is None:
+                        if threadPoolTaskCounter[id(node["pool"])] < node["pool"]._processes:
+                            node["future"] = node["pool"].apply_async(
+                                node["function"],
+                                (
+                                    node["footprint"],
+                                    node["data"],
+                                    node["in_fp"],
+                                    node["in_data"]
                                 )
-                                threadPoolTaskCounter[id(node["pool"])] += 1
-                            continue
+                            )
+                            threadPoolTaskCounter[id(node["pool"])] += 1
+                        continue
 
-                        elif node["future"].ready():
-                            in_data = node["future"].get()
-                            threadPoolTaskCounter[id(node["pool"])] -= 1
+                    in_edges = list(self._graph.in_edges(node_id))
 
-                            for in_edge in in_edges:
-                                if self._graph.nodes[in_edge[0]]["type"] == "to_produce":
-                                    self._graph.nodes[in_edge[0]]["futures"].append(self._io_pool.apply_async(
-                                        self._burn_data,
-                                        (
-                                            self._graph.nodes[in_edge[0]]["footprint"],
-                                            self._graph.nodes[in_edge[0]]["data"],
-                                            node["footprint"],
-                                            in_data
-                                        )
-                                    ))
-                                elif self._graph.nodes[in_edge[0]]["type"] == "to_merge":
-                                    self._graph.nodes[in_edge[0]]["in_data"].append(in_data)
-                                    self._graph.nodes[in_edge[0]]["in_fp"].append(node["footprint"])
-                                else:
-                                    self._graph.nodes[in_edge[0]]["in_data"] = in_data
-                                self._graph.remove_edge(*in_edge)
-                            continue
+                    if node["future"] is None:
+                        if threadPoolTaskCounter[id(node["pool"])] < node["pool"]._processes:
+                            node["future"] = node["pool"].apply_async(
+                                node["function"],
+                                (
+                                    node["footprint"],
+                                    node["in_data"]
+                                )
+                            )
+                            threadPoolTaskCounter[id(node["pool"])] += 1
+                        continue
+
+                    elif node["future"].ready():
+                        in_data = node["future"].get()
+                        threadPoolTaskCounter[id(node["pool"])] -= 1
+
+                        for in_edge in in_edges:
+                            if self._graph.nodes[in_edge[0]]["type"] == "to_produce":
+                                self._graph.nodes[in_edge[0]]["futures"].append(self._io_pool.apply_async(
+                                    self._burn_data,
+                                    (
+                                        self._graph.nodes[in_edge[0]]["footprint"],
+                                        self._graph.nodes[in_edge[0]]["data"],
+                                        node["footprint"],
+                                        in_data
+                                    )
+                                ))
+                            elif self._graph.nodes[in_edge[0]]["type"] == "to_merge":
+                                self._graph.nodes[in_edge[0]]["in_data"].append(in_data)
+                                self._graph.nodes[in_edge[0]]["in_fp"].append(node["footprint"])
+                            else:
+                                self._graph.nodes[in_edge[0]]["in_data"] = in_data
+                            self._graph.remove_edge(*in_edge)
+                        continue
 
 
             self._clean_graph()
-
+        time.sleep(1e-2)
 
 
     def _clean_graph(self):
@@ -464,6 +446,7 @@ class Raster(object):
                 footprint=to_produce[0],
                 data=np.zeros(tuple(to_produce[0].shape) + (self._num_bands,)),
                 type="to_produce",
+                linked_to_produce=set([to_produce_uid])
             )
 
             self._graph.add_edge(id(new_query), to_produce_uid)
@@ -474,18 +457,22 @@ class Raster(object):
                 to_merge = to_produce
 
                 to_merge_uid = _get_graph_uid(to_merge, "to_merge")
-                self._graph.add_node(
-                    to_merge_uid,
-                    footprint=to_merge,
-                    future=None,
-                    futures=[],
-                    data=np.zeros(tuple(to_produce.shape) + (self._num_bands,)),
-                    type="to_merge",
-                    pool=self._merge_pool,
-                    function=self._merge_data,
-                    in_data=[],
-                    in_fp=[]
-                )
+                if to_merge_uid in self._graph.nodes():
+                    self._graph.nodes[to_merge_uid]["linked_to_produce"].add(to_produce_uid)
+                else:
+                    self._graph.add_node(
+                        to_merge_uid,
+                        footprint=to_merge,
+                        future=None,
+                        futures=[],
+                        data=np.zeros(tuple(to_produce.shape) + (self._num_bands,)),
+                        type="to_merge",
+                        pool=self._merge_pool,
+                        function=self._merge_data,
+                        in_data=[],
+                        in_fp=[],
+                        linked_to_produce=set([to_produce_uid])
+                    )
                 self._graph.add_edge(to_produce_uid, to_merge_uid)
 
             else:
@@ -494,16 +481,19 @@ class Raster(object):
 
             for to_compute in multi_to_compute:
                 to_compute_uid = _get_graph_uid(to_compute, "to_compute")
-
-                self._graph.add_node(
-                    to_compute_uid,
-                    footprint=to_compute,
-                    future=None,
-                    type="to_compute",
-                    pool=self._computation_pool,
-                    function=self._compute_data,
-                    in_data=None
-                )
+                if to_compute_uid in self._graph.nodes():
+                    self._graph.nodes[to_compute_uid]["linked_to_produce"].add(to_produce_uid)
+                else:
+                    self._graph.add_node(
+                        to_compute_uid,
+                        footprint=to_compute,
+                        future=None,
+                        type="to_compute",
+                        pool=self._computation_pool,
+                        function=self._compute_data,
+                        in_data=None,
+                        linked_to_produce=set([to_produce_uid])
+                    )
                 if to_merge_uid is None:
                     self._graph.add_edge(to_produce_uid, to_compute_uid)
                 else:
@@ -519,13 +509,17 @@ class Raster(object):
 
                 for key in multi_to_collect:
                     to_collect_uid = _get_graph_uid(multi_to_collect[key], "to_collect" + key + str(id(new_query)))
-                    self._graph.add_node(
-                        to_collect_uid,
-                        footprint=multi_to_collect[key],
-                        future=None,
-                        type="to_collect",
-                        primitive=key
-                    )
+                    if to_collect_uid in self._graph.nodes():
+                        self._graph.nodes[to_collect_uid]["linked_to_produce"].add(to_produce_uid)
+                    else:
+                        self._graph.add_node(
+                            to_collect_uid,
+                            footprint=multi_to_collect[key],
+                            future=None,
+                            type="to_collect",
+                            primitive=key,
+                            linked_to_produce=set([to_produce_uid])
+                        )
                     self._graph.add_edge(to_compute_uid, to_collect_uid)
 
         new_query.collected = self._collect_data(new_query.to_collect)
@@ -686,11 +680,12 @@ class CachedRaster(Raster):
         tile_index = np.where(self._cache_tiles == cache_tile)
         path = str(
             Path(self._cache_dir) /
-            "{}_{}_{}_{}_{:.0f}_{:.0f}_{}_{}".format(
+            "fullsize_{:05d}_{:05d}_tilesize_{:05d}_{:05d}_tilepxindex_{:05d}_{:05d}_tileindex_{:05d}_{:05d}".format(
                 *self._full_fp.rsize,
                 *cache_tile.rsize,
-                cache_tile.tl[0]/cache_tile.pxsizex - self._full_fp.tl[0]/cache_tile.pxsizex,
-                self._full_fp.tl[1]/cache_tile.pxsizex - cache_tile.tl[1]/cache_tile.pxsizex,
+                # cache_tile.tl[0]/cache_tile.pxsizex - self._full_fp.tl[0]/cache_tile.pxsizex,
+                # self._full_fp.tl[1]/cache_tile.pxsizex - cache_tile.tl[1]/cache_tile.pxsizex,
+                *self._full_fp.spatial_to_raster(cache_tile.tl),
                 tile_index[0][0],
                 tile_index[1][0]
             )
@@ -778,7 +773,8 @@ class CachedRaster(Raster):
                 futures=[],
                 data=np.zeros(tuple(to_produce[0].shape) + (self._num_bands,)),
                 type="to_produce",
-                in_data=None
+                in_data=None,
+                linked_to_produce=set([to_produce_uid])
             )
             to_read_tiles = self._to_read_of_to_produce(to_produce[0])
 
@@ -795,7 +791,8 @@ class CachedRaster(Raster):
                     type="to_read",
                     pool=self._io_pool,
                     function=self._read_cache_data,
-                    in_data=None
+                    in_data=None,
+                    linked_to_produce=set([to_produce_uid])
                 )
                 self._graph.add_edge(to_produce_uid, to_read_uid)
 
@@ -805,7 +802,7 @@ class CachedRaster(Raster):
 
                     to_write_uid = _get_graph_uid(to_write, "to_write")
                     if to_write_uid in self._graph.nodes():
-                        self._graph.add_edge(to_read_uid, to_write_uid)
+                        self._graph.nodes[to_write_uid]["linked_to_produce"].add(to_produce_uid)
                     else:
                         self._graph.add_node(
                             to_write_uid,
@@ -814,13 +811,16 @@ class CachedRaster(Raster):
                             type="to_write",
                             pool=self._io_pool,
                             function=self._write_cache_data,
-                            in_data=None
+                            in_data=None,
+                            linked_to_produce=set([to_produce_uid])
                         )
-                        self._graph.add_edge(to_read_uid, to_write_uid)
+                    self._graph.add_edge(to_read_uid, to_write_uid)
 
-                        to_merge = to_write
-                        to_merge_uid = _get_graph_uid(to_merge, "to_merge")
-
+                    to_merge = to_write
+                    to_merge_uid = _get_graph_uid(to_merge, "to_merge")
+                    if to_merge_uid in self._graph.nodes():
+                        self._graph.nodes[to_merge_uid]["linked_to_produce"].add(to_produce_uid)
+                    else:
                         self._graph.add_node(
                             to_merge_uid,
                             footprint=to_merge,
@@ -831,15 +831,18 @@ class CachedRaster(Raster):
                             pool=self._merge_pool,
                             function=self._merge_data,
                             in_data=[],
-                            in_fp=[]
+                            in_fp=[],
+                            linked_to_produce=set([to_produce_uid])
                         )
-                        self._graph.add_edge(to_write_uid, to_merge_uid)
+                    self._graph.add_edge(to_write_uid, to_merge_uid)
 
-                        to_compute_multi = self._to_compute_of_to_write(to_write)
+                    to_compute_multi = self._to_compute_of_to_write(to_write)
 
-                        for to_compute in to_compute_multi:
-                            to_compute_uid = _get_graph_uid(to_compute, "to_compute")
-
+                    for to_compute in to_compute_multi:
+                        to_compute_uid = _get_graph_uid(to_compute, "to_compute")
+                        if to_compute_uid in self._graph.nodes():
+                            self._graph.nodes[to_compute_uid]["linked_to_produce"].add(to_produce_uid)
+                        else:
                             self._graph.add_node(
                                 to_compute_uid,
                                 footprint=to_compute,
@@ -847,27 +850,32 @@ class CachedRaster(Raster):
                                 type="to_compute",
                                 pool=self._computation_pool,
                                 function=self._compute_data,
-                                in_data=None
+                                in_data=None,
+                                linked_to_produce=set([to_produce_uid])
                             )
-                            self._graph.add_edge(to_merge_uid, to_compute_uid)
-                            if self._to_collect_of_to_compute is None:
-                                continue
-                            multi_to_collect = self._to_collect_of_to_compute(to_compute)
+                        self._graph.add_edge(to_merge_uid, to_compute_uid)
 
-                            for key in multi_to_collect:
-                                if multi_to_collect[key] not in new_query.to_collect[key]:
-                                    new_query.to_collect[key].append(multi_to_collect[key])
+                        if self._to_collect_of_to_compute is None:
+                            continue
+                        multi_to_collect = self._to_collect_of_to_compute(to_compute)
 
-                            for key in multi_to_collect:
-                                to_collect_uid = _get_graph_uid(multi_to_collect[key], "to_collect" + key + str(id(new_query)))
+                        for key in multi_to_collect:
+                            if multi_to_collect[key] not in new_query.to_collect[key]:
+                                new_query.to_collect[key].append(multi_to_collect[key])
+
+                            to_collect_uid = _get_graph_uid(multi_to_collect[key], "to_collect" + key + str(id(new_query)))
+                            if to_collect_uid in self._graph.nodes():
+                                self._graph.nodes[to_collect_uid]["linked_to_produce"].add(to_produce_uid)
+                            else:
                                 self._graph.add_node(
                                     to_collect_uid,
                                     footprint=multi_to_collect[key],
                                     future=None,
                                     type="to_collect",
-                                    primitive=key
+                                    primitive=key,
+                                    linked_to_produce=set([to_produce_uid])
                                 )
-                                self._graph.add_edge(to_compute_uid, to_collect_uid)
+                            self._graph.add_edge(to_compute_uid, to_collect_uid)
 
         new_query.collected = self._collect_data(new_query.to_collect)
 
