@@ -18,7 +18,7 @@ import itertools
 import numpy as np
 import networkx as nx
 import buzzard as buzz
-from rtree import index
+import rtree.index
 
 from burito.query import Query
 from burito.singleton_counter import SingletonCounter
@@ -38,9 +38,10 @@ def is_tiling_valid(fp, tiles):
     assert isinstance(tiles[0], buzz.Footprint)
 
     if any(not tile.same_grid(fp) for tile in tiles):
+        print("not same grid")
         return False
 
-    idx = index.Index()
+    idx = rtree.index.Index()
     bound_inset = np.r_[
         1 / 4,
         1 / 4,
@@ -52,15 +53,19 @@ def is_tiling_valid(fp, tiles):
     rsizes = np.array([tile.rsize for tile in tiles])
 
     if np.any(tls < 0):
+        print("tiles out of fp")
         return False
 
     if np.any(tls[:, 0] + rsizes[:, 0] > fp.rw):
+        print("tiles out of fp")
         return False
 
     if np.any(tls[:, 1] + rsizes[:, 1] > fp.rh):
+        print("tiles out of fp")
         return False
 
     if np.prod(rsizes, axis=0).sum() != fp.rarea:
+        print("tile area wrong")
         return False
 
     for i, (tl, rsize) in enumerate(zip(tls, rsizes)):
@@ -68,6 +73,7 @@ def is_tiling_valid(fp, tiles):
         bounds += bound_inset
 
         if len(list(idx.intersection(bounds))) > 0:
+            print("tiles overlap")
             return False
 
         else:
@@ -135,6 +141,8 @@ class Raster(object):
             for key in primitives
         }
 
+        if primitives.keys():
+            assert to_collect_of_to_compute is not None
         self._to_collect_of_to_compute = to_collect_of_to_compute
 
         self._computation_tiles = computation_tiles
