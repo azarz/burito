@@ -18,6 +18,7 @@ import itertools
 import numpy as np
 import networkx as nx
 import buzzard as buzz
+from buzzard import _tools
 import rtree.index
 
 from burito.query import Query
@@ -246,11 +247,9 @@ class Raster(object):
         return int(self._num_bands)
 
 
-    def _burn_data(self, big_fp, to_fill_data, to_burn_fp, to_burn_data):
-        print(self.__class__.__name__, " burning ", threading.currentThread().getName())
-        if len(to_fill_data.shape) == 3 and to_fill_data.shape[2] == 1:
-            to_fill_data = to_fill_data.squeeze(axis=-1)
-        to_fill_data[to_burn_fp.slice_in(big_fp, clip=True)] = to_burn_data[big_fp.slice_in(to_burn_fp, clip=True)]
+    def _burn_data(self, produce_fp, produced_data, to_burn_fp, to_burn_data):
+        produced_data[to_burn_fp.slice_in(produce_fp)] = to_burn_data
+
 
 
 
@@ -260,6 +259,7 @@ class Raster(object):
         available_to_produce = set()
         while True:
 
+            self._clean_graph()
             if not self._queries:
                 time.sleep(1e-1)
                 continue
@@ -271,6 +271,7 @@ class Raster(object):
                 if isinstance(self, CachedRaster):
                     self._check_query(new_query)
                 self._update_graph_from_query(new_query)
+                print(self.__class__.__name__, " updating ended ", threading.currentThread().getName())
 
             # ordering queries accroding to their pressure
             ordered_queries = sorted(self._queries, key=self._pressure_ratio)
@@ -353,7 +354,6 @@ class Raster(object):
                             primitive_footprints.append(query.to_collect[collected_primitive].pop(0))
 
                         if threadPoolTaskCounter[id(node["pool"])] < node["pool"]._processes:
-                            threadPoolTaskCounter[id(self._computation_pool)] += 1
                             node["future"] = self._computation_pool.apply_async(
                                 self._compute_data,
                                 (
@@ -363,10 +363,10 @@ class Raster(object):
                                     self
                                 )
                             )
+                            threadPoolTaskCounter[id(self._computation_pool)] += 1
 
                             compute_out_edges = list(self._graph.out_edges(node))
-                            for to_remove_edge in compute_out_edges:
-                                self._graph.remove_edge(*to_remove_edge)
+                            self._graph.remove_edges_from(compute_out_edges)
 
                         continue
 
@@ -379,6 +379,8 @@ class Raster(object):
                                 node["data"] = node["data"].squeeze(axis=-1)
                             # If the query has not been dropped
                             if query.produced() is not None:
+                                if len(node["data"].shape) == 3 and node["data"].shape[2] == 1:
+                                    node["data"] = node["data"].squeeze(axis=-1)
                                 query.produced().put(node["data"].astype(self._dtype), timeout=1e-2)
                             query.to_produce.pop(0)
 
@@ -411,13 +413,23 @@ class Raster(object):
 
                     if node["future"] is None:
                         if threadPoolTaskCounter[id(node["pool"])] < node["pool"]._processes:
-                            node["future"] = node["pool"].apply_async(
-                                node["function"],
-                                (
-                                    node["footprint"],
-                                    node["in_data"]
+                            if node["type"] == "to_read":
+                                node["future"] = node["pool"].apply_async(
+                                    node["function"],
+                                    (
+                                        node["footprint"],
+                                        node["produce_fp"],
+                                        node["bands"]
+                                    )
                                 )
-                            )
+                            else:
+                                node["future"] = node["pool"].apply_async(
+                                    node["function"],
+                                    (
+                                        node["footprint"],
+                                        node["in_data"]
+                                    )
+                                )
                             threadPoolTaskCounter[id(node["pool"])] += 1
                         continue
 
@@ -444,8 +456,6 @@ class Raster(object):
                             self._graph.remove_edge(*in_edge)
                         continue
 
-
-            self._clean_graph()
         time.sleep(1e-2)
 
 
@@ -510,7 +520,7 @@ class Raster(object):
                 to_produce_uid,
                 futures=[],
                 footprint=to_produce[0],
-                data=np.zeros(tuple(to_produce[0].shape) + (self._num_bands,)),
+                data=np.zeros(tuple(to_produce[0].shape) + (len(new_query.bands),)),
                 type="to_produce",
                 linked_to_produce=set([to_produce_uid])
             )
@@ -600,13 +610,17 @@ class Raster(object):
         returns a queue from a fp_iterable and can manage the context of the method
         """
 
-        def _get_multi_data_queue(fp_iterable, queue_size=5):
+        def _get_multi_data_queue(fp_iterable, band=-1, queue_size=5):
             """
             returns a queue from a fp_iterable
             """
+
+            # Normalize and check band parameter
+            bands, _ = _tools.normalize_band_parameter(band, len(self), None)
+
             fp_iterable = list(fp_iterable)
             q = queue.Queue(queue_size)
-            query = Query(q)
+            query = Query(q, bands)
             to_produce = [(fp, "sleeping") for fp in fp_iterable]
 
             query.to_produce += to_produce
@@ -619,12 +633,12 @@ class Raster(object):
         return GetDataWithPrimitive(self, _get_multi_data_queue)
 
 
-    def get_multi_data(self, fp_iterable, queue_size=5):
+    def get_multi_data(self, fp_iterable, band=-1, queue_size=5):
         """
         returns a  generator from a fp_iterable
         """
         fp_iterable = list(fp_iterable)
-        out_queue = self.get_multi_data_queue(fp_iterable, queue_size)
+        out_queue = self.get_multi_data_queue(fp_iterable, band, queue_size)
 
         def out_generator():
             """
@@ -639,11 +653,11 @@ class Raster(object):
         return out_generator()
 
 
-    def get_data(self, fp):
+    def get_data(self, fp, band=-1):
         """
         returns a np array
         """
-        return next(self.get_multi_data([fp]))
+        return next(self.get_multi_data([fp], band))
 
 
 
@@ -770,7 +784,7 @@ class CachedRaster(Raster):
         return file_path
 
 
-    def _read_cache_data(self, cache_tile, _placeholder=None):
+    def _read_cache_data(self, cache_tile, produce_fp, bands):
         """
         reads cache data
         """
@@ -784,7 +798,8 @@ class CachedRaster(Raster):
             ds = self._thread_storage.ds
 
         with ds.open_araster(filepath).close as src:
-            data = src.get_data(band=-1, fp=cache_tile)
+            data = src.get_data(band=bands, fp=produce_fp.intersection(cache_tile))
+
         return data
 
 
@@ -839,7 +854,7 @@ class CachedRaster(Raster):
                 to_produce_uid,
                 footprint=to_produce[0],
                 futures=[],
-                data=np.zeros(tuple(to_produce[0].shape) + (self._num_bands,)),
+                data=np.zeros(tuple(to_produce[0].shape) + (len(new_query.bands),)),
                 type="to_produce",
                 in_data=None,
                 linked_to_produce=set([to_produce_uid])
@@ -859,8 +874,9 @@ class CachedRaster(Raster):
                     type="to_read",
                     pool=self._io_pool,
                     function=self._read_cache_data,
-                    in_data=None,
-                    linked_to_produce=set([to_produce_uid])
+                    produce_fp=to_produce[0],
+                    linked_to_produce=set([to_produce_uid]),
+                    bands=new_query.bands
                 )
                 self._graph.add_edge(to_produce_uid, to_read_uid)
 

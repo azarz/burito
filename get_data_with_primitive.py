@@ -6,8 +6,8 @@ class GetDataWithPrimitive(object):
         self._primitive = obj
         self._function = function
 
-    def __call__(self, fp_iterable, queue_size=5):
-        return self._function(fp_iterable, queue_size)
+    def __call__(self, fp_iterable, band=-1, queue_size=5):
+        return self._function(fp_iterable, band, queue_size)
 
     @property
     def primitive(self):
