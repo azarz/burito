@@ -54,12 +54,12 @@ g_gpu_pool = mp.pool.ThreadPool(1)
 
 
 
-def resampled_raster(raster, scale, cache_dir, cache_fps):
+def resampled_raster(fp, raster, cache_dir, cache_fps):
     """
     resampled raster from buzzard raster
     """
 
-    full_fp = raster.fp.intersection(raster.fp, scale=scale, alignment=(0, 0))
+    full_fp = fp
 
     num_bands = len(raster)
     nodata = raster.nodata
@@ -174,7 +174,7 @@ def slopes_raster(dsm):
 
 
 
-def heatmap_raster(model, resampled_rgba, slopes, cache_dir, cache_fps):
+def heatmap_raster(fp, model, resampled_rgba, slopes, cache_dir, cache_fps):
     """
     heatmap raster with primitives: ortho + slopes
     """
@@ -210,11 +210,7 @@ def heatmap_raster(model, resampled_rgba, slopes, cache_dir, cache_fps):
 
     primitives = {"rgba": resampled_rgba.get_multi_data_queue, "slopes": slopes.get_multi_data_queue}
 
-    max_scale = max(resampled_rgba.fp.scale[0], slopes.fp.scale[0])
-    min_scale = min(resampled_rgba.fp.scale[0], slopes.fp.scale[0])
-
-    full_fp = resampled_rgba.fp.intersection(slopes.fp, scale=max_scale, alignment=(0, 0))
-    full_fp = full_fp.intersection(full_fp, scale=min_scale)
+    full_fp = fp
 
     computation_tiles = full_fp.tile(np.asarray(model.outputs[0].shape[1:3]).T)
 
@@ -260,30 +256,33 @@ def main():
     print("")
 
     with datasrc.open_araster(rgb_path).close as raster:
-        out_fp = raster.fp.intersection(raster.fp, scale=1.28, alignment=(0, 0))
+        out_fp64 = raster.fp.intersection(raster.fp, scale=0.64, alignment=(0, 0))
 
-    tile_count128 = np.ceil(out_fp.rsize / 500)
-    cache_tiles128 = out_fp.tile_count(*tile_count128, boundary_effect='shrink')
+    with datasrc.open_araster(dsm_path).close as raster:
+        out_fp128 = raster.fp.intersection(raster.fp, scale=1.28, alignment=(0, 0))
 
-    out_fp = out_fp.intersection(out_fp, scale=0.64)
+    tile_count128 = np.ceil(out_fp128.rsize / 500)
+    cache_tiles128 = out_fp128.tile_count(*tile_count128, boundary_effect='shrink')
 
-    tile_count64 = np.ceil(out_fp.rsize / 500)
-    cache_tiles64 = out_fp.tile_count(*tile_count64, boundary_effect='shrink')
+    # out_fp = out_fp.intersection(out_fp, scale=0.64)
+
+    tile_count64 = np.ceil(out_fp64.rsize / 500)
+    cache_tiles64 = out_fp64.tile_count(*tile_count64, boundary_effect='shrink')
 
     initial_rgba = datasrc.open_araster(rgb_path)
     initial_dsm = datasrc.open_araster(dsm_path)
 
-    resampled_rgba = resampled_raster(initial_rgba, 0.64, str(Path(CACHE_DIR) / DIR_NAMES[frozenset({"ortho"})]), cache_tiles64)
-    resampled_dsm = resampled_raster(initial_dsm, 1.28, str(Path(CACHE_DIR) / DIR_NAMES[frozenset({"dsm"})]), cache_tiles128)
+    resampled_rgba = resampled_raster(out_fp64, initial_rgba, str(Path(CACHE_DIR) / DIR_NAMES[frozenset({"ortho"})]), cache_tiles64)
+    resampled_dsm = resampled_raster(out_fp128, initial_dsm, str(Path(CACHE_DIR) / DIR_NAMES[frozenset({"dsm"})]), cache_tiles128)
 
     slopes = slopes_raster(resampled_dsm)
 
-    hmr = heatmap_raster(model, resampled_rgba, slopes, str(Path(CACHE_DIR) / DIR_NAMES[frozenset({"ortho", "dsm"})]), cache_tiles64)
+    hmr = heatmap_raster(out_fp64, model, resampled_rgba, slopes, str(Path(CACHE_DIR) / DIR_NAMES[frozenset({"ortho", "dsm"})]), cache_tiles64)
 
-    big_display_fp = out_fp
+    big_display_fp = out_fp64
     big_dsm_disp_fp = big_display_fp.intersection(big_display_fp, scale=1.28, alignment=(0, 0))
 
-    tile_count64 = np.ceil(out_fp.rsize / 100)
+    tile_count64 = np.ceil(out_fp64.rsize / 100)
     display_tiles = big_display_fp.tile_count(*tile_count64, boundary_effect='shrink')
     dsm_display_tiles = big_dsm_disp_fp.tile_count(5, 5, boundary_effect='shrink')
 

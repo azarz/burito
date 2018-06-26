@@ -64,8 +64,12 @@ def is_tiling_valid(fp, tiles):
         print("tiles out of fp")
         return False
 
-    if np.prod(rsizes, axis=0).sum() != fp.rarea:
+    if np.prod(rsizes, axis=1).sum() != fp.rarea:
         print("tile area wrong")
+        print(rsizes.shape)
+        print(np.prod(rsizes, axis=1).sum())
+        print(np.prod(rsizes, axis=1).shape)
+        print(fp.rarea)
         return False
 
     for i, (tl, rsize) in enumerate(zip(tls, rsizes)):
@@ -727,7 +731,6 @@ class CachedRaster(Raster):
             cache_path = cache_tile_path[0]
             checksum_dot_tif = cache_path.split('_')[-1]
             file_checksum = checksum_dot_tif.split('.')[0]
-            print(cache_path)
 
             if int(file_checksum, base=16) == checksum_file(cache_path):
                 return True
@@ -754,7 +757,6 @@ class CachedRaster(Raster):
                 tile_index[1][0]
             )
         )
-        print(path)
         return path
 
 
@@ -808,6 +810,7 @@ class CachedRaster(Raster):
                                      )
         out_proxy.set_data(data, band=-1)
         out_proxy.close()
+        self._cache_checksum_array[np.where(self._cache_tiles == cache_tile)] = True
 
 
     def _update_graph_from_query(self, new_query):
