@@ -46,9 +46,9 @@ DIR_NAMES = {
 CACHE_DIR = "./.cache"
 
 
-g_io_pool = mp.pool.ThreadPool()
-g_cpu_pool = mp.pool.ThreadPool()
-g_merge_pool = mp.pool.ThreadPool()
+g_io_pool = mp.pool.ThreadPool(1)
+g_cpu_pool = mp.pool.ThreadPool(5)
+g_merge_pool = mp.pool.ThreadPool(1)
 g_gpu_pool = mp.pool.ThreadPool(1)
 
 
@@ -288,12 +288,12 @@ def main():
 
     # rgba_out = resampled_rgba.get_multi_data(list(cache_tiles64.flat), 1)
     # slopes_out = slopes.get_multi_data(list(cache_tiles128.flat), 1)
-    hm_out = slopes.get_multi_data(cache_tiles128.flat, -1, 1)
+    hm_out = hmr.get_multi_data(cache_tiles64.flat, -1, 1)
 
     for display_fp in cache_tiles64.flat:
         try:
             show_many_images(
-                [np.argmax(next(hm_out), axis=-1)],
+                [np.argmax(next(hm_out))],
                 extents=[display_fp.extent]
             )
         except StopIteration:

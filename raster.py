@@ -26,6 +26,7 @@ from burito.singleton_counter import SingletonCounter
 from burito.checksum import checksum, checksum_file
 from burito.get_data_with_primitive import GetDataWithPrimitive
 
+
 threadPoolTaskCounter = SingletonCounter()
 
 def _get_graph_uid(fp, _type):
@@ -249,8 +250,6 @@ class Raster(object):
 
     def _burn_data(self, produce_fp, produced_data, to_burn_fp, to_burn_data):
         produced_data[to_burn_fp.slice_in(produce_fp)] = to_burn_data
-
-
 
 
     def _scheduler(self):
@@ -732,10 +731,9 @@ class CachedRaster(Raster):
         return indices
 
 
-    def _check_cache_fps(self, indices):
-        for index in indices:
-            footprint = self._cache_tiles[index][0]
-            self._cache_checksum_array[index] = self._check_cache_file(footprint)
+    def _check_cache_fp(self, index):
+        footprint = self._cache_tiles[index][0]
+        self._cache_checksum_array[index] = self._check_cache_file(footprint)
 
     def _check_cache_file(self, footprint):
         cache_tile_path = self._get_cache_tile_path(footprint)
@@ -745,15 +743,18 @@ class CachedRaster(Raster):
             cache_path = cache_tile_path[0]
             checksum_dot_tif = cache_path.split('_')[-1]
             file_checksum = checksum_dot_tif.split('.')[0]
-
             if int(file_checksum, base=16) == checksum_file(cache_path):
                 return True
         return False
 
     def _check_query(self, query):
+        a = time.clock()
+        print(self.__class__.__name__, " checking query ", threading.currentThread().getName())
         to_produce_fps = query.to_produce
         to_check = self._to_check_of_to_produce(to_produce_fps)
-        self._check_cache_fps(to_check)
+        self._io_pool.map(self._check_cache_fp, to_check)
+        print(self.__class__.__name__, " query checked ", time.clock() - a, threading.currentThread().getName())
+
 
 
     def _get_cache_tile_path_prefix(self, cache_tile):
