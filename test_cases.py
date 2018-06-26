@@ -1,4 +1,4 @@
-from raster import raster_factory
+from burito.raster import raster_factory
 import buzzard as buzz
 import queue
 import numpy as np

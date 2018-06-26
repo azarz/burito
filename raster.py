@@ -135,6 +135,9 @@ class Raster(object):
         else:
             self._merge_pool = merge_pool
 
+        if primitives is None:
+            primitives = {}
+
         self._primitive_functions = primitives
         self._primitive_rasters = {
             key: (primitives[key].primitive if hasattr(primitives[key], "primitive") else None)
@@ -562,6 +565,8 @@ class Raster(object):
                     continue
                 multi_to_collect = self._to_collect_of_to_compute(to_compute)
 
+                assert multi_to_collect.keys() == self._primitive_functions.keys()
+
                 for key in multi_to_collect:
                     if multi_to_collect[key] not in new_query.to_collect[key]:
                         new_query.to_collect[key].append(multi_to_collect[key])
@@ -919,6 +924,8 @@ class CachedRaster(Raster):
                             continue
                         multi_to_collect = self._to_collect_of_to_compute(to_compute)
 
+                        assert multi_to_collect.keys() == self._primitive_functions.keys()
+
                         for key in multi_to_collect:
                             if multi_to_collect[key] not in new_query.to_collect[key]:
                                 new_query.to_collect[key].append(multi_to_collect[key])
@@ -973,7 +980,7 @@ def raster_factory(footprint,
                    cache_fps=None,
                    io_pool=None,
                    computation_pool=None,
-                   primitives={},
+                   primitives=None,
                    to_collect_of_to_compute=None,
                    computation_fps=None,
                    merge_pool=None,

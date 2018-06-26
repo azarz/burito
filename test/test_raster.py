@@ -34,7 +34,7 @@ def test_complicated_raster_dependencies():
     computation_pool = mp.pool.ThreadPool(6)
     io_pool = mp.pool.ThreadPool(6)
     footprint = buzz.Footprint(tl=(0, 0), size=(10, 10), rsize=(10, 10))
-    
+
     def ones(fp, *args):
         return np.ones(fp.shape)
 
@@ -86,7 +86,7 @@ def test_complicated_raster_dependencies():
         "arange": arange_raster.get_multi_data_queue
     }
 
-    def to_collect_of_to_compute(fp): 
+    def to_collect_of_to_compute(fp):
         return {"ones": fp, "twos": fp, "arange": fp}
 
     summ_raster = raster_factory(

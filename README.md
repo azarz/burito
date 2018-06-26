@@ -1,4 +1,4 @@
-# airware-internship
+# airware-internship: BuRITo, Buzzard's Raster Inception Tool
 
 ## Vocabulary:
 For a given request to a raster:
