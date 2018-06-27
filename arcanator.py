@@ -72,7 +72,6 @@ def resampled_raster(fp, raster, cache_dir, cache_fps):
         """
         resampled raster compted data when collecting. this is a particular case
         """
-        print("resample computing ", threading.currentThread().getName())
         if not hasattr(thread_storage, "ds"):
             ds = buzz.DataSource(allow_interpolation=True)
             thread_storage.ds = ds
@@ -119,7 +118,6 @@ def slopes_raster(dsm):
         """
         computes up and down slopes
         """
-        print("slopes computing", threading.currentThread().getName())
         arr = input_data[0]
         assert arr.shape == tuple(compute_fp.dilate(1).shape)
         nodata_mask = arr == nodata
@@ -288,12 +286,12 @@ def main():
 
     # rgba_out = resampled_rgba.get_multi_data(list(cache_tiles64.flat), 1)
     # slopes_out = slopes.get_multi_data(list(cache_tiles128.flat), 1)
-    hm_out = slopes.get_multi_data(cache_tiles128.flat, -1, 1)
+    hm_out = hmr.get_multi_data(cache_tiles64.flat, -1, 1)
 
     for display_fp in cache_tiles64.flat:
         try:
             show_many_images(
-                [next(hm_out)[...,0]],
+                [np.argmax(next(hm_out), axis=-1)],
                 extents=[display_fp.extent]
             )
         except StopIteration:

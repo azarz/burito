@@ -254,12 +254,12 @@ class Raster(object):
 
 
     def _scheduler(self):
-        header = f"{list(self._primitive_functions.keys())!s:25}"
+        header = f"{list(self._primitive_functions.keys())!s:20} {self._num_bands!s:3} {self.dtype!s:10}"
         self.h = header
         print(header, "scheduler in")
         # list of available and produced to_collect footprints
         available_to_produce = set()
-        
+
         while True:
 
             self._clean_graph()
@@ -268,26 +268,24 @@ class Raster(object):
             while self._new_queries:
                 print(header, "updating graph ")
 
-                a = datetime.datetime.now()
+                # a = datetime.datetime.now()
                 new_query = self._new_queries.pop(0)
-                b = datetime.datetime.now() - a
-                print(header, "popped, query size:", len(new_query.to_produce), b.total_seconds())
+                # b = datetime.datetime.now() - a
+                # print(header, "popped, query size:", len(new_query.to_produce), b.total_seconds())
 
                 if isinstance(self, CachedRaster):
-                    print(header, "check array", self._cache_checksum_array.flatten())
-                    a = datetime.datetime.now()
-                    print(header, "checking ")
+                    # print(header, "check array", self._cache_checksum_array.flatten())
+                    # a = datetime.datetime.now()
+                    # print(header, "checking ")
                     self._check_query(new_query)
-                    # for i in range(1000000):
-                    #     i = (i**2)**0.5
-                    b = datetime.datetime.now() - a
-                    print(header, "checked ", b.total_seconds())
-                    print(header, "check array after check", self._cache_checksum_array.flatten())
+                    # b = datetime.datetime.now() - a
+                    # print(header, "checked ", b.total_seconds())
+                    # print(header, "check array after check", self._cache_checksum_array.flatten())
 
-                a = datetime.datetime.now()
+                # a = datetime.datetime.now()
                 self._update_graph_from_query(new_query)
-                b = datetime.datetime.now() - a
-                print(header, "updating ended ", b.total_seconds())
+                # b = datetime.datetime.now() - a
+                print(header, "updating ended ")
 
 
             # ordering queries accroding to their pressure
@@ -391,11 +389,9 @@ class Raster(object):
                             not_ready_list = [future for future in node["futures"] if not future.ready()]
                             if not not_ready_list:
 
-                                if len(node["data"].shape) == 3 and node["data"].shape[2] == 1:
-                                    node["data"] = node["data"].squeeze(axis=-1)
                                 # If the query has not been dropped
                                 if query.produced() is not None:
-                                    if len(node["data"].shape) == 3 and node["data"].shape[2] == 1:
+                                    if node["is_flat"]:
                                         node["data"] = node["data"].squeeze(axis=-1)
                                     query.produced().put(node["data"].astype(self._dtype), timeout=1e-2)
                                 query.to_produce.pop(0)
@@ -450,7 +446,7 @@ class Raster(object):
                             continue
 
                         elif node["future"].ready():
-                            in_data = node["future"].get()
+                            in_data = node["future"].get().astype(self._dtype).reshape(tuple(node["footprint"].shape) + (len(node["bands"]),))
                             threadPoolTaskCounter[id(node["pool"])] -= 1
 
                             for in_edge in in_edges:
@@ -475,8 +471,8 @@ class Raster(object):
 
             if not self._queries:
                 time.sleep(1e-1)
-                continue
-            time.sleep(1e-2)
+            else:
+                time.sleep(1e-2)
 
 
     def _clean_graph(self):
@@ -542,7 +538,8 @@ class Raster(object):
                 footprint=to_produce[0],
                 data=np.zeros(tuple(to_produce[0].shape) + (len(new_query.bands),)),
                 type="to_produce",
-                linked_to_produce=set([to_produce_uid])
+                linked_to_produce=set([to_produce_uid]),
+                bands=new_query.bands
             )
 
             self._graph.add_edge(id(new_query), to_produce_uid)
@@ -561,13 +558,13 @@ class Raster(object):
                         footprint=to_merge,
                         future=None,
                         futures=[],
-                        data=np.zeros(tuple(to_produce.shape) + (self._num_bands,)),
                         type="to_merge",
                         pool=self._merge_pool,
                         function=self._merge_data,
                         in_data=[],
                         in_fp=[],
-                        linked_to_produce=set([to_produce_uid])
+                        linked_to_produce=set([to_produce_uid]),
+                        bands=new_query.bands
                     )
                 self._graph.add_edge(to_produce_uid, to_merge_uid)
 
@@ -588,7 +585,8 @@ class Raster(object):
                         pool=self._computation_pool,
                         function=self._compute_data,
                         in_data=None,
-                        linked_to_produce=set([to_produce_uid])
+                        linked_to_produce=set([to_produce_uid]),
+                        bands=new_query.bands
                     )
                 if to_merge_uid is None:
                     self._graph.add_edge(to_produce_uid, to_compute_uid)
@@ -616,7 +614,8 @@ class Raster(object):
                             future=None,
                             type="to_collect",
                             primitive=key,
-                            linked_to_produce=set([to_produce_uid])
+                            linked_to_produce=set([to_produce_uid]),
+                            bands=new_query.bands
                         )
                     self._graph.add_edge(to_compute_uid, to_collect_uid)
 
@@ -636,11 +635,11 @@ class Raster(object):
             """
 
             # Normalize and check band parameter
-            bands, _ = _tools.normalize_band_parameter(band, len(self), None)
+            bands, is_flat = _tools.normalize_band_parameter(band, len(self), None)
 
             fp_iterable = list(fp_iterable)
             q = queue.Queue(queue_size)
-            query = Query(q, bands)
+            query = Query(q, bands, is_flat)
             to_produce = [(fp, "sleeping") for fp in fp_iterable]
 
             query.to_produce += to_produce
@@ -771,11 +770,8 @@ class CachedRaster(Raster):
     def _check_query(self, query):
         # print(self.h, " checking query ", threading.currentThread().getName())
         to_produce_fps = query.to_produce
-        print(self.h, "before share")
         to_check = self._to_check_of_to_produce(to_produce_fps)
-        print(self.h, "after share, before map")
         self._io_pool.map(self._check_cache_fp, to_check)
-        print(self.h, "after map")
         # print(self.h, " query checked ", time.clock(), threading.currentThread().getName())
 
 
@@ -881,7 +877,9 @@ class CachedRaster(Raster):
                 data=np.zeros(tuple(to_produce[0].shape) + (len(new_query.bands),)),
                 type="to_produce",
                 in_data=None,
-                linked_to_produce=set([to_produce_uid])
+                linked_to_produce=set([to_produce_uid]),
+                is_flat=new_query.is_flat,
+                bands=new_query.bands
             )
             to_read_tiles = self._to_read_of_to_produce(to_produce[0])
 
@@ -920,7 +918,8 @@ class CachedRaster(Raster):
                             pool=self._io_pool,
                             function=self._write_cache_data,
                             in_data=None,
-                            linked_to_produce=set([to_produce_uid])
+                            linked_to_produce=set([to_produce_uid]),
+                            bands=new_query.bands
                         )
                     self._graph.add_edge(to_read_uid, to_write_uid)
 
@@ -940,7 +939,8 @@ class CachedRaster(Raster):
                             function=self._merge_data,
                             in_data=[],
                             in_fp=[],
-                            linked_to_produce=set([to_produce_uid])
+                            linked_to_produce=set([to_produce_uid]),
+                            bands=new_query.bands
                         )
                     self._graph.add_edge(to_write_uid, to_merge_uid)
 
@@ -959,7 +959,8 @@ class CachedRaster(Raster):
                                 pool=self._computation_pool,
                                 function=self._compute_data,
                                 in_data=None,
-                                linked_to_produce=set([to_produce_uid])
+                                linked_to_produce=set([to_produce_uid]),
+                                bands=new_query.bands
                             )
                         self._graph.add_edge(to_merge_uid, to_compute_uid)
 
@@ -983,7 +984,8 @@ class CachedRaster(Raster):
                                     future=None,
                                     type="to_collect",
                                     primitive=key,
-                                    linked_to_produce=set([to_produce_uid])
+                                    linked_to_produce=set([to_produce_uid]),
+                                    bands=new_query.bands
                                 )
                             self._graph.add_edge(to_compute_uid, to_collect_uid)
 

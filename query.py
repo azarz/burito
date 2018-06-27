@@ -7,7 +7,7 @@ class Query(object):
     """
     Query used by the Raster class
     """
-    def __init__(self, queue, bands):
+    def __init__(self, queue, bands, is_flat):
         self.to_produce = []
         self.produced = weakref.ref(queue)
 
@@ -15,3 +15,5 @@ class Query(object):
         self.collected = {}
 
         self.bands = bands
+
+        self.is_flat = is_flat
