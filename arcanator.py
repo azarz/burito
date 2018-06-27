@@ -47,7 +47,7 @@ CACHE_DIR = "./.cache"
 
 
 g_io_pool = mp.pool.ThreadPool(1)
-g_cpu_pool = mp.pool.ThreadPool(5)
+g_cpu_pool = mp.pool.ThreadPool(1)
 g_merge_pool = mp.pool.ThreadPool(1)
 g_gpu_pool = mp.pool.ThreadPool(1)
 
@@ -151,7 +151,7 @@ def slopes_raster(dsm):
         """
         return {"dsm": fp.dilate(1)}
 
-    primitives = {"dsm": dsm.get_multi_data_queue}
+    primitives = {"dsm": dsm.get_multi_data_queue._function}
     nodata = dsm.nodata
     num_bands = 2
     dtype = "float32"
@@ -288,12 +288,12 @@ def main():
 
     # rgba_out = resampled_rgba.get_multi_data(list(cache_tiles64.flat), 1)
     # slopes_out = slopes.get_multi_data(list(cache_tiles128.flat), 1)
-    hm_out = hmr.get_multi_data(cache_tiles64.flat, -1, 1)
+    hm_out = slopes.get_multi_data(cache_tiles128.flat, -1, 1)
 
     for display_fp in cache_tiles64.flat:
         try:
             show_many_images(
-                [np.argmax(next(hm_out))],
+                [next(hm_out)[...,0]],
                 extents=[display_fp.extent]
             )
         except StopIteration:

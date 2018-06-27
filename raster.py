@@ -8,6 +8,7 @@ import multiprocessing.pool
 import os
 import threading
 import time
+import datetime
 from collections import defaultdict
 import glob
 import shutil
@@ -159,9 +160,6 @@ class Raster(object):
         self._queries = []
         self._new_queries = []
 
-        self._scheduler_thread = threading.Thread(target=self._scheduler, daemon=True)
-        self._scheduler_thread.start()
-
         self._thread_storage = threading.local()
 
         self._graph = nx.DiGraph()
@@ -188,6 +186,9 @@ class Raster(object):
 
         # Used to track the number of pending tasks
         self._num_pending = defaultdict(int)
+
+        self._scheduler_thread = threading.Thread(target=self._scheduler, daemon=True)
+        self._scheduler_thread.start()
 
 
     def _pressure_ratio(self, query):
@@ -253,209 +254,229 @@ class Raster(object):
 
 
     def _scheduler(self):
-        print(self.__class__.__name__, " scheduler in ", threading.currentThread().getName())
+        header = f"{list(self._primitive_functions.keys())!s:25}"
+        self.h = header
+        print(header, "scheduler in")
         # list of available and produced to_collect footprints
         available_to_produce = set()
+        
         while True:
 
             self._clean_graph()
-            if not self._queries:
-                time.sleep(1e-1)
-                continue
 
             # Consuming the new queries
             while self._new_queries:
-                print(self.__class__.__name__, " updating graph ", threading.currentThread().getName())
+                print(header, "updating graph ")
+
+                a = datetime.datetime.now()
                 new_query = self._new_queries.pop(0)
+                b = datetime.datetime.now() - a
+                print(header, "popped, query size:", len(new_query.to_produce), b.total_seconds())
+
                 if isinstance(self, CachedRaster):
+                    print(header, "check array", self._cache_checksum_array.flatten())
+                    a = datetime.datetime.now()
+                    print(header, "checking ")
                     self._check_query(new_query)
+                    # for i in range(1000000):
+                    #     i = (i**2)**0.5
+                    b = datetime.datetime.now() - a
+                    print(header, "checked ", b.total_seconds())
+                    print(header, "check array after check", self._cache_checksum_array.flatten())
+
+                a = datetime.datetime.now()
                 self._update_graph_from_query(new_query)
-                print(self.__class__.__name__, " updating ended ", threading.currentThread().getName())
+                b = datetime.datetime.now() - a
+                print(header, "updating ended ", b.total_seconds())
+
 
             # ordering queries accroding to their pressure
             ordered_queries = sorted(self._queries, key=self._pressure_ratio)
             # getting the emptiest query
-            query = ordered_queries[0]
+            for query in ordered_queries:
 
-            # If all to_produced was consumed: query ended
-            if not query.to_produce:
-                self._num_pending[query] = 0
-                self._queries.remove(ordered_queries[0])
-                continue
-
-            # If the query has been dropped
-            if query.produced() is None:
-                self._num_pending[query] = 0
-                to_delete_edges = nx.dfs_edges(self._graph, source=id(ordered_queries[0]))
-                self._graph.remove_edges_from(to_delete_edges)
-                self._graph.remove_node(id(ordered_queries[0]))
-                self._queries.remove(ordered_queries[0])
-                continue
-
-            # if the emptiest query is full, waiting
-            if query.produced().full():
-                continue
-
-            # detecting which produce footprints are available
-            # while there is space
-            while query.produced().qsize() + self._num_pending[id(query)] < query.produced().maxsize and query.to_produce[-1][1] == "sleeping":
-                # getting the first sleeping to_produce
-                to_produce_available = [to_produce[0] for to_produce in query.to_produce if to_produce[1] == "sleeping"][0]
-                # getting its id in the graph
-                to_produce_available_id = _get_graph_uid(
-                    to_produce_available,
-                    "to_produce" + str(self._to_produce_available_occurencies_dict[to_produce_available])
-                )
-
-                available_to_produce.add(to_produce_available_id)
-                query.to_produce[query.to_produce.index((to_produce_available, "sleeping"))] = (to_produce_available, "pending")
-
-                self._num_pending[id(query)] += 1
-                self._to_produce_available_occurencies_dict[to_produce_available] += 1
-
-
-            # iterating through the graph
-            for index, to_produce in enumerate(query.to_produce):
-
-                if to_produce[1] == "sleeping":
+                # If all to_produced was consumed: query ended
+                if not query.to_produce:
+                    self._num_pending[query] = 0
+                    self._queries.remove(ordered_queries[0])
                     continue
 
-                # beginning at to_produce
-                first_node_id = _get_graph_uid(to_produce[0], "to_produce" + str(self._to_produce_out_occurencies_dict[to_produce[0]]))
-                # going as deep as possible
-                depth_node_ids = nx.dfs_postorder_nodes(self._graph.copy(), source=first_node_id)
-                for node_id in depth_node_ids:
-                    node = self._graph.nodes[node_id]
+                # If the query has been dropped
+                if query.produced() is None:
+                    self._num_pending[query] = 0
+                    to_delete_edges = nx.dfs_edges(self._graph, source=id(ordered_queries[0]))
+                    self._graph.remove_edges_from(to_delete_edges)
+                    self._graph.remove_node(id(ordered_queries[0]))
+                    self._queries.remove(ordered_queries[0])
+                    continue
 
-                    # If there are out edges, not stopping (unless it is a compute node)
-                    if len(self._graph.out_edges(node_id)) > 0 and node["type"] != "to_compute":
+                # if the emptiest query is full, waiting
+                if query.produced().full():
+                    continue
+
+                # detecting which produce footprints are available
+                # while there is space
+                while query.produced().qsize() + self._num_pending[id(query)] < query.produced().maxsize and query.to_produce[-1][1] == "sleeping":
+                    # getting the first sleeping to_produce
+                    to_produce_available = [to_produce[0] for to_produce in query.to_produce if to_produce[1] == "sleeping"][0]
+                    # getting its id in the graph
+                    to_produce_available_id = _get_graph_uid(
+                        to_produce_available,
+                        "to_produce" + str(self._to_produce_available_occurencies_dict[to_produce_available])
+                    )
+
+                    available_to_produce.add(to_produce_available_id)
+                    query.to_produce[query.to_produce.index((to_produce_available, "sleeping"))] = (to_produce_available, "pending")
+
+                    self._num_pending[id(query)] += 1
+                    self._to_produce_available_occurencies_dict[to_produce_available] += 1
+
+
+                # iterating through the graph
+                for index, to_produce in enumerate(query.to_produce):
+                    if to_produce[1] == "sleeping":
                         continue
 
-                    # Skipping the nodes not linked to available (pending) to_produce
-                    if available_to_produce.isdisjoint(node["linked_to_produce"]):
-                        continue
+                    # beginning at to_produce
+                    first_node_id = _get_graph_uid(to_produce[0], "to_produce" + str(self._to_produce_out_occurencies_dict[to_produce[0]]))
+                    # going as deep as possible
+                    depth_node_ids = nx.dfs_postorder_nodes(self._graph.copy(), source=first_node_id)
 
-                    # Skipping the collect
-                    if node["type"] == "to_collect":
-                        continue
+                    for node_id in depth_node_ids:
+                        node = self._graph.nodes[node_id]
 
-                    # if deepest is to_compute, collecting (if possible) and computing
-                    if node["type"] == "to_compute" and node["future"] is None:
-                        # testing if at least 1 of the collected queues is empty (1 queue per primitive)
-                        if any([query.collected[primitive].empty() for primitive in query.collected]):
-                            break
+                        # If there are out edges, not stopping (unless it is a compute node)
+                        if len(self._graph.out_edges(node_id)) > 0 and node["type"] != "to_compute":
+                            continue
 
-                        collected_data = []
-                        primitive_footprints = []
+                        # Skipping the nodes not linked to available (pending) to_produce
+                        if available_to_produce.isdisjoint(node["linked_to_produce"]):
+                            continue
 
-                        for collected_primitive in query.collected.keys():
-                            collected_data.append(query.collected[collected_primitive].get(block=False))
-                            primitive_footprints.append(query.to_collect[collected_primitive].pop(0))
+                        # Skipping the collect
+                        if node["type"] == "to_collect":
+                            continue
 
-                        if threadPoolTaskCounter[id(node["pool"])] < node["pool"]._processes:
-                            node["future"] = self._computation_pool.apply_async(
-                                self._compute_data,
-                                (
-                                    node["footprint"],
-                                    collected_data,
-                                    primitive_footprints,
-                                    self
-                                )
-                            )
-                            threadPoolTaskCounter[id(self._computation_pool)] += 1
+                        # if deepest is to_compute, collecting (if possible) and computing
+                        if node["type"] == "to_compute" and node["future"] is None:
+                            # testing if at least 1 of the collected queues is empty (1 queue per primitive)
+                            if any([query.collected[primitive].empty() for primitive in query.collected]):
+                                break
+                            collected_data = []
+                            primitive_footprints = []
 
-                            compute_out_edges = list(self._graph.out_edges(node))
-                            self._graph.remove_edges_from(compute_out_edges)
+                            for collected_primitive in query.collected.keys():
+                                collected_data.append(query.collected[collected_primitive].get(block=False))
+                                primitive_footprints.append(query.to_collect[collected_primitive].pop(0))
 
-                        continue
-
-                    # if the deepest is to_produce, updating produced
-                    if index == 0 and node["type"] == "to_produce":
-                        not_ready_list = [future for future in node["futures"] if not future.ready()]
-                        if not not_ready_list:
-
-                            if len(node["data"].shape) == 3 and node["data"].shape[2] == 1:
-                                node["data"] = node["data"].squeeze(axis=-1)
-                            # If the query has not been dropped
-                            if query.produced() is not None:
-                                if len(node["data"].shape) == 3 and node["data"].shape[2] == 1:
-                                    node["data"] = node["data"].squeeze(axis=-1)
-                                query.produced().put(node["data"].astype(self._dtype), timeout=1e-2)
-                            query.to_produce.pop(0)
-
-                            self._to_produce_out_occurencies_dict[to_produce[0]] += 1
-                            self._graph.remove_node(node_id)
-
-                            self._num_pending[id(query)] -= 1
-
-                        continue
-
-                    # skipping the ready to_produce that are not at index 0
-                    if node["type"] == "to_produce":
-                        continue
-
-                    if node["type"] == "to_merge" and node["future"] is None:
-                        if threadPoolTaskCounter[id(node["pool"])] < node["pool"]._processes:
-                            node["future"] = node["pool"].apply_async(
-                                node["function"],
-                                (
-                                    node["footprint"],
-                                    node["data"],
-                                    node["in_fp"],
-                                    node["in_data"]
-                                )
-                            )
-                            threadPoolTaskCounter[id(node["pool"])] += 1
-                        continue
-
-                    in_edges = list(self._graph.in_edges(node_id))
-
-                    if node["future"] is None:
-                        if threadPoolTaskCounter[id(node["pool"])] < node["pool"]._processes:
-                            if node["type"] == "to_read":
-                                node["future"] = node["pool"].apply_async(
-                                    node["function"],
+                            if threadPoolTaskCounter[id(node["pool"])] < node["pool"]._processes:
+                                node["future"] = self._computation_pool.apply_async(
+                                    self._compute_data,
                                     (
                                         node["footprint"],
-                                        node["produce_fp"],
-                                        node["bands"]
+                                        collected_data,
+                                        primitive_footprints,
+                                        self
                                     )
                                 )
-                            else:
+                                threadPoolTaskCounter[id(self._computation_pool)] += 1
+
+                                compute_out_edges = list(self._graph.out_edges(node))
+                                self._graph.remove_edges_from(compute_out_edges)
+
+                            continue
+
+                        # if the deepest is to_produce, updating produced
+                        if index == 0 and node["type"] == "to_produce":
+                            not_ready_list = [future for future in node["futures"] if not future.ready()]
+                            if not not_ready_list:
+
+                                if len(node["data"].shape) == 3 and node["data"].shape[2] == 1:
+                                    node["data"] = node["data"].squeeze(axis=-1)
+                                # If the query has not been dropped
+                                if query.produced() is not None:
+                                    if len(node["data"].shape) == 3 and node["data"].shape[2] == 1:
+                                        node["data"] = node["data"].squeeze(axis=-1)
+                                    query.produced().put(node["data"].astype(self._dtype), timeout=1e-2)
+                                query.to_produce.pop(0)
+
+                                self._to_produce_out_occurencies_dict[to_produce[0]] += 1
+                                self._graph.remove_node(node_id)
+
+                                self._num_pending[id(query)] -= 1
+
+                            continue
+
+                        # skipping the ready to_produce that are not at index 0
+                        if node["type"] == "to_produce":
+                            continue
+
+                        if node["type"] == "to_merge" and node["future"] is None:
+                            if threadPoolTaskCounter[id(node["pool"])] < node["pool"]._processes:
                                 node["future"] = node["pool"].apply_async(
                                     node["function"],
                                     (
                                         node["footprint"],
+                                        node["data"],
+                                        node["in_fp"],
                                         node["in_data"]
                                     )
                                 )
-                            threadPoolTaskCounter[id(node["pool"])] += 1
-                        continue
+                                threadPoolTaskCounter[id(node["pool"])] += 1
+                            continue
 
-                    elif node["future"].ready():
-                        in_data = node["future"].get()
-                        threadPoolTaskCounter[id(node["pool"])] -= 1
+                        in_edges = list(self._graph.in_edges(node_id))
 
-                        for in_edge in in_edges:
-                            if self._graph.nodes[in_edge[0]]["type"] == "to_produce":
-                                self._graph.nodes[in_edge[0]]["futures"].append(self._io_pool.apply_async(
-                                    self._burn_data,
-                                    (
-                                        self._graph.nodes[in_edge[0]]["footprint"],
-                                        self._graph.nodes[in_edge[0]]["data"],
-                                        node["footprint"],
-                                        in_data
+                        if node["future"] is None:
+                            if threadPoolTaskCounter[id(node["pool"])] < node["pool"]._processes:
+                                if node["type"] == "to_read":
+                                    node["future"] = node["pool"].apply_async(
+                                        node["function"],
+                                        (
+                                            node["footprint"],
+                                            node["produce_fp"],
+                                            node["bands"]
+                                        )
                                     )
-                                ))
-                            elif self._graph.nodes[in_edge[0]]["type"] == "to_merge":
-                                self._graph.nodes[in_edge[0]]["in_data"].append(in_data)
-                                self._graph.nodes[in_edge[0]]["in_fp"].append(node["footprint"])
-                            else:
-                                self._graph.nodes[in_edge[0]]["in_data"] = in_data
-                            self._graph.remove_edge(*in_edge)
-                        continue
+                                else:
+                                    node["future"] = node["pool"].apply_async(
+                                        node["function"],
+                                        (
+                                            node["footprint"],
+                                            node["in_data"]
+                                        )
+                                    )
+                                threadPoolTaskCounter[id(node["pool"])] += 1
+                            continue
 
-        time.sleep(1e-2)
+                        elif node["future"].ready():
+                            in_data = node["future"].get()
+                            threadPoolTaskCounter[id(node["pool"])] -= 1
+
+                            for in_edge in in_edges:
+                                if self._graph.nodes[in_edge[0]]["type"] == "to_produce":
+                                    self._graph.nodes[in_edge[0]]["futures"].append(self._io_pool.apply_async(
+                                        self._burn_data,
+                                        (
+                                            self._graph.nodes[in_edge[0]]["footprint"],
+                                            self._graph.nodes[in_edge[0]]["data"],
+                                            node["footprint"],
+                                            in_data
+                                        )
+                                    ))
+                                elif self._graph.nodes[in_edge[0]]["type"] == "to_merge":
+                                    self._graph.nodes[in_edge[0]]["in_data"].append(in_data)
+                                    self._graph.nodes[in_edge[0]]["in_fp"].append(node["footprint"])
+                                else:
+                                    self._graph.nodes[in_edge[0]]["in_data"] = in_data
+                                self._graph.remove_edge(*in_edge)
+                            continue
+
+
+            if not self._queries:
+                time.sleep(1e-1)
+                continue
+            time.sleep(1e-2)
 
 
     def _clean_graph(self):
@@ -478,7 +499,7 @@ class Raster(object):
         }
         out: {"prim_1": queue_1, "prim_2": queue_2, ..., "prim_p": queue_p}
         """
-        print(self.__class__.__name__, " collecting ", threading.currentThread().getName())
+        print(self.h, "collecting")
         results = {}
         for primitive in self._primitive_functions.keys():
             results[primitive] = self._primitive_functions[primitive](to_collect[primitive])
@@ -748,12 +769,14 @@ class CachedRaster(Raster):
         return False
 
     def _check_query(self, query):
-        a = time.clock()
-        print(self.__class__.__name__, " checking query ", threading.currentThread().getName())
+        # print(self.h, " checking query ", threading.currentThread().getName())
         to_produce_fps = query.to_produce
+        print(self.h, "before share")
         to_check = self._to_check_of_to_produce(to_produce_fps)
+        print(self.h, "after share, before map")
         self._io_pool.map(self._check_cache_fp, to_check)
-        print(self.__class__.__name__, " query checked ", time.clock() - a, threading.currentThread().getName())
+        print(self.h, "after map")
+        # print(self.h, " query checked ", time.clock(), threading.currentThread().getName())
 
 
 
@@ -789,7 +812,7 @@ class CachedRaster(Raster):
         """
         reads cache data
         """
-        print(self.__class__.__name__, " reading ", threading.currentThread().getName())
+        print(self.h, "reading ")
         filepath = self._get_cache_tile_path(cache_tile)[0]
 
         if not hasattr(self._thread_storage, "ds"):
@@ -808,7 +831,7 @@ class CachedRaster(Raster):
         """
         writes cache data
         """
-        print(self.__class__.__name__, " writing ", threading.currentThread().getName())
+        print(self.h, "writing ")
         cs = checksum(data)
         filepath = self._get_cache_tile_path_prefix(cache_tile) + "_" + f'{cs:#010x}' + ".tif"
         if not hasattr(self._thread_storage, "ds"):
