@@ -21,7 +21,7 @@ import networkx as nx
 import buzzard as buzz
 from buzzard import _tools
 import rtree.index
-from osgeo import gdal
+from osgeo import gdal, osr
 from buzzard._tools import conv
 
 from burito.query import Query
@@ -207,6 +207,13 @@ class Raster(object):
         returns the raster footprint
         """
         return self._full_fp
+
+    @property
+    def nbands(self):
+        """
+        returns the raster's number of bands'
+        """
+        return self._num_bands
 
     @property
     def nodata(self):
@@ -861,22 +868,67 @@ class CachedRaster(Raster):
         print(self.h, "writing ")
         cs = checksum(data)
         filepath = self._get_cache_tile_path_prefix(cache_tile) + "_" + f'{cs:#010x}' + ".tif"
-        if not hasattr(self._thread_storage, "ds"):
-            ds = buzz.DataSource(allow_interpolation=True)
-            self._thread_storage.ds = ds
-        else:
-            ds = self._thread_storage.ds
+        sr = self.wkt_origin
 
-        # TODO: use GDAL
-        out_proxy = ds.create_araster(filepath,
-                                      cache_tile,
-                                      data.dtype,
-                                      self._num_bands,
-                                      driver="GTiff",
-                                      sr=self.wkt_origin
-                                     )
-        out_proxy.set_data(data, band=-1)
-        out_proxy.close()
+        dr = gdal.GetDriverByName("GTiff")
+        if os.path.isfile(filepath):
+            err = dr.Delete(filepath)
+            if err:
+                raise Exception('Could not delete %s' % filepath)
+
+        options = ()
+        gdal_ds = dr.Create(
+            filepath, cache_tile.rsizex, cache_tile.rsizey, self.nbands, conv.gdt_of_any_equiv(self.dtype), options
+        )
+        if gdal_ds is None:
+            raise Exception('Could not create gdal dataset (%s)' % gdal.GetLastErrorMsg())
+        if sr is not None:
+            gdal_ds.SetProjection(osr.GetUserInputAsWKT(sr))
+        gdal_ds.SetGeoTransform(cache_tile.gt)
+
+        # band_schema = None
+
+        gdal_ds.FlushCache()
+
+
+        # Check array shape
+        array = np.asarray(data)
+        if array.shape[:2] != tuple(cache_tile.shape):
+            raise ValueError('Incompatible shape between array:%s and fp:%s' % (
+                array.shape, cache_tile.shape
+            )) # pragma: no cover
+
+        # Normalize and check array shape
+        if array.ndim == 2:
+            array = array[:, :, np.newaxis]
+        elif array.ndim != 3:
+            raise ValueError('Array has shape %d' % array.shape) # pragma: no cover
+        if array.shape[-1] != self.nbands:
+            raise ValueError('Incompatible band count between array:%d and band:%d' % (
+                array.shape[-1], self.nbands
+            )) # pragma: no cover
+
+
+        # Normalize array dtype
+        array = array.astype(self.dtype)
+
+
+        if array.dtype == np.int8:
+            array = array.astype('uint8')
+
+        def _blocks_of_footprint(fp, bands):
+            for i, band in enumerate(bands):
+                yield fp, band, i # Todo use tile_count and gdal block size
+
+        bands = list(range(1, self.nbands + 1))
+
+        for tile, band, dim in _blocks_of_footprint(cache_tile, bands):
+            tilearray = array[:, :, dim][tile.slice_in(cache_tile)]
+            gdalband = gdal_ds.GetRasterBand(band)
+            gdalband.WriteArray(tilearray)
+
+        gdal_ds.FlushCache()
+
         self._cache_checksum_array[np.where(self._cache_tiles == cache_tile)] = True
 
 
