@@ -1,7 +1,8 @@
-# airware-internship: BuRITo, Buzzard's Raster Inception Tool
+# BuRITo, Buzzard's Raster Inception Tool
 
 ## Vocabulary:
 For a given request to a raster:
+
 	Requested fps: to_produce (list)
 
 	Returned queue: produced (queue)

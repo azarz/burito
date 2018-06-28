@@ -16,4 +16,5 @@ def output_fp_to_input_fp(fp, scale, rsize):
     padding = (rsize - out.rsizex) / 2
     assert padding == int(padding)
     out = out.dilate(padding)
+    # assert out.same_grid(fp)
     return out

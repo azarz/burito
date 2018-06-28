@@ -21,6 +21,8 @@ import networkx as nx
 import buzzard as buzz
 from buzzard import _tools
 import rtree.index
+from osgeo import gdal
+from buzzard._tools import conv
 
 from burito.query import Query
 from burito.singleton_counter import SingletonCounter
@@ -168,8 +170,6 @@ class Raster(object):
             """
             Defeult merge function: burning
             """
-            if len(out_data.shape) == 3 and out_data.shape[2] == 1:
-                out_data = out_data.squeeze(axis=-1)
             for to_burn_fp, to_burn_data in zip(in_fps, in_arrays):
                 out_data[to_burn_fp.slice_in(out_fp, clip=True)] = to_burn_data[out_fp.slice_in(to_burn_fp, clip=True)]
             return out_data
@@ -429,7 +429,7 @@ class Raster(object):
                                     node["future"] = node["pool"].apply_async(
                                         node["function"],
                                         (
-                                            node["footprint"],
+                                            node["cache_fp"],
                                             node["produce_fp"],
                                             node["bands"]
                                         )
@@ -446,7 +446,9 @@ class Raster(object):
                             continue
 
                         elif node["future"].ready():
-                            in_data = node["future"].get().astype(self._dtype).reshape(tuple(node["footprint"].shape) + (len(node["bands"]),))
+                            in_data = node["future"].get()
+                            if in_data is not None:
+                                in_data = in_data.astype(self._dtype).reshape(tuple(node["footprint"].shape) + (len(node["bands"]),))
                             threadPoolTaskCounter[id(node["pool"])] -= 1
 
                             for in_edge in in_edges:
@@ -539,7 +541,8 @@ class Raster(object):
                 data=np.zeros(tuple(to_produce[0].shape) + (len(new_query.bands),)),
                 type="to_produce",
                 linked_to_produce=set([to_produce_uid]),
-                bands=new_query.bands
+                bands=new_query.bands,
+                is_flat=new_query.is_flat
             )
 
             self._graph.add_edge(id(new_query), to_produce_uid)
@@ -638,6 +641,8 @@ class Raster(object):
             bands, is_flat = _tools.normalize_band_parameter(band, len(self), None)
 
             fp_iterable = list(fp_iterable)
+            for fp in fp_iterable:
+                assert fp.same_grid(self._full_fp)
             q = queue.Queue(queue_size)
             query = Query(q, bands, is_flat)
             to_produce = [(fp, "sleeping") for fp in fp_iterable]
@@ -811,16 +816,42 @@ class CachedRaster(Raster):
         print(self.h, "reading ")
         filepath = self._get_cache_tile_path(cache_tile)[0]
 
-        if not hasattr(self._thread_storage, "ds"):
-            ds = buzz.DataSource(allow_interpolation=True)
-            self._thread_storage.ds = ds
-        else:
-            ds = self._thread_storage.ds
+        # Open a raster datasource
+        options = ()
+        gdal_ds = gdal.OpenEx(
+            filepath,
+            conv.of_of_mode('r') | conv.of_of_str('raster'),
+            ['GTiff'],
+            options,
+        )
+        if gdal_ds is None:
+            raise ValueError('Could not open `{}` with `{}` (gdal error: `{}`)'.format(
+                filepath, 'GTiff', gdal.GetLastErrorMsg()
+            ))
 
-        with ds.open_araster(filepath).close as src:
-            data = src.get_data(band=bands, fp=produce_fp.intersection(cache_tile))
+        assert produce_fp.same_grid(cache_tile)
 
-        return data
+        to_read_fp = produce_fp.intersection(cache_tile)
+
+        rtlx, rtly = to_read_fp.spatial_to_raster(to_read_fp.tl)
+
+        assert rtlx >= 0 and rtlx < cache_tile.rsizex
+        assert rtly >= 0 and rtly < cache_tile.rsizey
+
+        samplebands = []
+        for i in bands:
+            a = gdal_ds.GetRasterBand(i).ReadAsArray(
+                int(rtlx), int(rtly), int(to_read_fp.rsizex), int(to_read_fp.rsizey)
+            )
+            if a is None:
+                raise ValueError('Could not read array (gdal error: `{}`)'.format(
+                    gdal.GetLastErrorMsg()
+                ))
+            samplebands.append(a)
+        samplebands = np.stack(samplebands, -1)
+
+        assert np.array_equal(samplebands.shape[0:2], to_read_fp.shape)
+        return samplebands
 
 
     def _write_cache_data(self, cache_tile, data):
@@ -836,6 +867,7 @@ class CachedRaster(Raster):
         else:
             ds = self._thread_storage.ds
 
+        # TODO: use GDAL
         out_proxy = ds.create_araster(filepath,
                                       cache_tile,
                                       data.dtype,
@@ -891,7 +923,8 @@ class CachedRaster(Raster):
 
                 self._graph.add_node(
                     to_read_uid,
-                    footprint=to_read,
+                    footprint=to_produce[0].intersection(to_read),
+                    cache_fp=to_read,
                     future=None,
                     type="to_read",
                     pool=self._io_pool,

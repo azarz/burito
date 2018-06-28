@@ -182,6 +182,8 @@ def heatmap_raster(fp, model, resampled_rgba, slopes, cache_dir, cache_fps):
         """
         rgba_tile = output_fp_to_input_fp(fp, 0.64, model.get_layer("rgb").input_shape[1])
         slope_tile = output_fp_to_input_fp(fp, 1.28, model.get_layer("slopes").input_shape[1])
+        assert slope_tile.same_grid(slopes.fp)
+        assert rgba_tile.same_grid(resampled_rgba.fp)
         return {"rgba": rgba_tile, "slopes": slope_tile}
 
     def compute_data(compute_fp, input_data, input_fps, selfraster):
