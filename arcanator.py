@@ -16,6 +16,7 @@ from burito.uids_of_paths import uids_of_paths
 
 from burito.raster import raster_factory
 from burito.output_fp_to_input_fp import output_fp_to_input_fp
+from burito.create_work_tiles import create_work_tiles
 
 CATEGORIES = (
     #0        1       2        3        4
@@ -203,7 +204,6 @@ def heatmap_raster(fp, model, resampled_rgba, slopes, cache_dir, cache_fps):
         print("<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<")
         return prediction
 
-
     dtype = "float32"
 
     num_bands = LABEL_COUNT
@@ -212,7 +212,7 @@ def heatmap_raster(fp, model, resampled_rgba, slopes, cache_dir, cache_fps):
 
     full_fp = fp
 
-    computation_tiles = full_fp.tile(np.asarray(model.outputs[0].shape[1:3]).T)
+    computation_tiles = create_work_tiles(fp, 0.)
 
     return raster_factory(
         footprint=full_fp, 
