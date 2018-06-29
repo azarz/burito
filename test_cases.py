@@ -1,4 +1,4 @@
-from burito.raster import raster_factory
+from burito.raster import Raster
 import buzzard as buzz
 import queue
 import numpy as np
@@ -41,7 +41,7 @@ def main():
         array1, array2 = data[0], data[1]
         return (array1 + array2)**0.5
  
-    random_raster = raster_factory(footprint=full_fp,
+    random_raster = Raster(footprint=full_fp,
                          dtype='float32',
                          computation_function=compute_data,
                          io_pool=g_io_pool,

@@ -14,7 +14,7 @@ import buzzard as buzz
 from burito.show_many_images import show_many_images
 from burito.uids_of_paths import uids_of_paths
 
-from burito.raster import raster_factory
+from burito.raster import Raster
 from burito.output_fp_to_input_fp import output_fp_to_input_fp
 from burito.create_work_tiles import create_work_tiles
 
@@ -87,7 +87,7 @@ def resampled_raster(fp, raster, cache_dir, cache_fps):
 
     primitives = {}
 
-    return raster_factory(
+    return Raster(
         footprint=full_fp, 
         dtype=dtype, 
         nbands=num_bands, 
@@ -155,7 +155,7 @@ def slopes_raster(dsm):
     num_bands = 2
     dtype = "float32"
 
-    return raster_factory(footprint=full_fp,
+    return Raster(footprint=full_fp,
                      dtype=dtype,
                      nbands=num_bands,
                      nodata=nodata,
@@ -214,7 +214,7 @@ def heatmap_raster(fp, model, resampled_rgba, slopes, cache_dir, cache_fps):
 
     computation_tiles = create_work_tiles(fp, 0.)
 
-    return raster_factory(
+    return Raster(
         footprint=full_fp, 
         dtype=dtype, 
         nbands=num_bands, 

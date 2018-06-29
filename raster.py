@@ -93,33 +93,64 @@ def is_tiling_valid(fp, tiles):
 
 class Raster(object):
     def __init__(self,
-                 footprint,
-                 dtype,
-                 nbands,
-                 nodata,
-                 srs,
-                 computation_function,
-                 io_pool,
-                 computation_pool,
-                 primitives,
-                 to_collect_of_to_compute,
-                 computation_tiles,
-                 merge_pool,
-                 merge_function):
+                 footprint=None,
+                   dtype='float32',
+                   nbands=1,
+                   nodata=None,
+                   srs=None,
+                   computation_function=None,
+                   cached=False,
+                   overwrite=False,
+                   cache_dir=None,
+                   cache_fps=None,
+                   io_pool=None,
+                   computation_pool=None,
+                   primitives=None,
+                   to_collect_of_to_compute=None,
+                   computation_fps=None,
+                   merge_pool=None,
+                   merge_function=None):
+        """
+        creates a raster from arguments
+        """
+        if footprint is None:
+            raise ValueError()
+        if cached:
+            assert cache_dir != None
+            backend_raster = raster = BackendCachedRaster(footprint,
+                                  dtype,
+                                  nbands,
+                                  nodata,
+                                  srs,
+                                  computation_function,
+                                  overwrite,
+                                  cache_dir,
+                                  cache_fps,
+                                  io_pool,
+                                  computation_pool,
+                                  primitives,
+                                  to_collect_of_to_compute,
+                                  computation_fps,
+                                  merge_pool,
+                                  merge_function
+                                 )
+        else:
+            backend_raster = BackendRaster(footprint,
+                            dtype,
+                            nbands,
+                            nodata,
+                            srs,
+                            computation_function,
+                            io_pool,
+                            computation_pool,
+                            primitives,
+                            to_collect_of_to_compute,
+                            computation_fps,
+                            merge_pool,
+                            merge_function
+                           )
 
-        self._backend = BackendRaster(footprint,
-                                      dtype,
-                                      nbands,
-                                      nodata,
-                                      srs,
-                                      computation_function,
-                                      io_pool,
-                                      computation_pool,
-                                      primitives,
-                                      to_collect_of_to_compute,
-                                      computation_tiles,
-                                      merge_pool,
-                                      merge_function)
+        self._backend = backend_raster
 
         self._scheduler_thread = threading.Thread(target=self._backend._scheduler, daemon=True)
         self._scheduler_thread.start()
@@ -240,49 +271,6 @@ class Raster(object):
         returns a np array
         """
         return next(self.get_multi_data([fp], band))
-
-
-
-
-class CachedRaster(Raster):
-    def __init__(self,
-                 footprint,
-                 dtype,
-                 nbands,
-                 nodata,
-                 srs,
-                 computation_function,
-                 overwrite,
-                 cache_dir,
-                 cache_fps,
-                 io_pool,
-                 computation_pool,
-                 primitives,
-                 to_collect_of_to_compute,
-                 computation_tiles,
-                 merge_pool,
-                 merge_function):
-
-        self._backend = BackendCachedRaster(footprint,
-                                            dtype,
-                                            nbands,
-                                            nodata,
-                                            srs,
-                                            computation_function,
-                                            overwrite,
-                                            cache_dir,
-                                            cache_fps,
-                                            io_pool,
-                                            computation_pool,
-                                            primitives,
-                                            to_collect_of_to_compute,
-                                            computation_tiles,
-                                            merge_pool,
-                                            merge_function)
-
-        self._scheduler_thread = threading.Thread(target=self._backend._scheduler, daemon=True)
-        self._scheduler_thread.start()
-
 
 
 
@@ -470,7 +458,7 @@ class BackendRaster(object):
                 # b = datetime.datetime.now() - a
                 # print(header, "popped, query size:", len(new_query.to_produce), b.total_seconds())
 
-                if isinstance(self, CachedRaster):
+                if isinstance(self, BackendCachedRaster):
                     # print(header, "check array", self._cache_checksum_array.flatten())
                     # a = datetime.datetime.now()
                     # print(header, "checking ")
@@ -1231,63 +1219,3 @@ class BackendCachedRaster(BackendRaster):
                 to_compute_list.append(computation_tile)
 
         return to_compute_list
-
-
-
-def raster_factory(footprint,
-                   dtype='float32',
-                   nbands=1,
-                   nodata=None,
-                   srs=None,
-                   computation_function=None,
-                   cached=False,
-                   overwrite=False,
-                   cache_dir=None,
-                   cache_fps=None,
-                   io_pool=None,
-                   computation_pool=None,
-                   primitives=None,
-                   to_collect_of_to_compute=None,
-                   computation_fps=None,
-                   merge_pool=None,
-                   merge_function=None):
-    """
-    creates a raster from arguments
-    """
-
-    if cached:
-        assert cache_dir != None
-        raster = CachedRaster(footprint,
-                              dtype,
-                              nbands,
-                              nodata,
-                              srs,
-                              computation_function,
-                              overwrite,
-                              cache_dir,
-                              cache_fps,
-                              io_pool,
-                              computation_pool,
-                              primitives,
-                              to_collect_of_to_compute,
-                              computation_fps,
-                              merge_pool,
-                              merge_function
-                             )
-    else:
-        raster = Raster(footprint,
-                        dtype,
-                        nbands,
-                        nodata,
-                        srs,
-                        computation_function,
-                        io_pool,
-                        computation_pool,
-                        primitives,
-                        to_collect_of_to_compute,
-                        computation_fps,
-                        merge_pool,
-                        merge_function
-                       )
-
-    return raster

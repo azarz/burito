@@ -7,7 +7,7 @@ import multiprocessing as mp
 import multiprocessing.pool
 import buzzard as buzz
 
-from burito.raster import raster_factory
+from burito.raster import Raster
 
 
 def test_simple_raster():
@@ -18,7 +18,7 @@ def test_simple_raster():
     def compute_data(fp, *args):
         return np.zeros(fp.shape)
 
-    simple_raster = raster_factory(
+    simple_raster = Raster(
         footprint=footprint,
         computation_function=compute_data,
         computation_pool=computation_pool,
@@ -59,21 +59,21 @@ def test_complicated_raster_dependencies():
         assert np.array_equal(producted.shape, fp.shape)
         return producted
 
-    ones_raster = raster_factory(
+    ones_raster = Raster(
         footprint=footprint,
         computation_function=ones,
         computation_pool=computation_pool,
         io_pool=io_pool
     )
 
-    twos_raster = raster_factory(
+    twos_raster = Raster(
         footprint=footprint,
         computation_function=twos,
         computation_pool=computation_pool,
         io_pool=io_pool
     )
 
-    arange_raster = raster_factory(
+    arange_raster = Raster(
         footprint=footprint,
         computation_function=arange,
         computation_pool=computation_pool,
@@ -89,7 +89,7 @@ def test_complicated_raster_dependencies():
     def to_collect_of_to_compute(fp):
         return {"ones": fp, "twos": fp, "arange": fp}
 
-    summ_raster = raster_factory(
+    summ_raster = Raster(
         footprint=footprint,
         computation_function=summ,
         computation_pool=computation_pool,
@@ -98,7 +98,7 @@ def test_complicated_raster_dependencies():
         to_collect_of_to_compute=to_collect_of_to_compute
     )
 
-    diff_raster = raster_factory(
+    diff_raster = Raster(
         footprint=footprint,
         computation_function=diff,
         computation_pool=computation_pool,
@@ -107,7 +107,7 @@ def test_complicated_raster_dependencies():
         to_collect_of_to_compute=to_collect_of_to_compute
     )
 
-    product_raster = raster_factory(
+    product_raster = Raster(
         footprint=footprint,
         computation_function=product,
         computation_pool=computation_pool,
