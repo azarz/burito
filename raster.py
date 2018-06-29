@@ -94,22 +94,22 @@ def is_tiling_valid(fp, tiles):
 class Raster(object):
     def __init__(self,
                  footprint=None,
-                   dtype='float32',
-                   nbands=1,
-                   nodata=None,
-                   srs=None,
-                   computation_function=None,
-                   cached=False,
-                   overwrite=False,
-                   cache_dir=None,
-                   cache_fps=None,
-                   io_pool=None,
-                   computation_pool=None,
-                   primitives=None,
-                   to_collect_of_to_compute=None,
-                   computation_fps=None,
-                   merge_pool=None,
-                   merge_function=None):
+                 dtype='float32',
+                 nbands=1,
+                 nodata=None,
+                 srs=None,
+                 computation_function=None,
+                 cached=False,
+                 overwrite=False,
+                 cache_dir=None,
+                 cache_fps=None,
+                 io_pool=None,
+                 computation_pool=None,
+                 primitives=None,
+                 to_collect_of_to_compute=None,
+                 computation_fps=None,
+                 merge_pool=None,
+                 merge_function=None):
         """
         creates a raster from arguments
         """
@@ -117,37 +117,37 @@ class Raster(object):
             raise ValueError()
         if cached:
             assert cache_dir != None
-            backend_raster = raster = BackendCachedRaster(footprint,
-                                  dtype,
-                                  nbands,
-                                  nodata,
-                                  srs,
-                                  computation_function,
-                                  overwrite,
-                                  cache_dir,
-                                  cache_fps,
-                                  io_pool,
-                                  computation_pool,
-                                  primitives,
-                                  to_collect_of_to_compute,
-                                  computation_fps,
-                                  merge_pool,
-                                  merge_function
+            backend_raster = BackendCachedRaster(footprint,
+                                                 dtype,
+                                                 nbands,
+                                                 nodata,
+                                                 srs,
+                                                 computation_function,
+                                                 overwrite,
+                                                 cache_dir,
+                                                 cache_fps,
+                                                 io_pool,
+                                                 computation_pool,
+                                                 primitives,
+                                                 to_collect_of_to_compute,
+                                                 computation_fps,
+                                                 merge_pool,
+                                                 merge_function
                                  )
         else:
             backend_raster = BackendRaster(footprint,
-                            dtype,
-                            nbands,
-                            nodata,
-                            srs,
-                            computation_function,
-                            io_pool,
-                            computation_pool,
-                            primitives,
-                            to_collect_of_to_compute,
-                            computation_fps,
-                            merge_pool,
-                            merge_function
+                                           dtype,
+                                           nbands,
+                                           nodata,
+                                           srs,
+                                           computation_function,
+                                           io_pool,
+                                           computation_pool,
+                                           primitives,
+                                           to_collect_of_to_compute,
+                                           computation_fps,
+                                           merge_pool,
+                                           merge_function
                            )
 
         self._backend = backend_raster
@@ -343,10 +343,11 @@ class BackendRaster(object):
 
         self._graph = nx.DiGraph()
 
-        def default_merge_data(out_fp, out_data, in_fps, in_arrays):
+        def default_merge_data(out_fp, in_fps, in_arrays):
             """
-            Defeult merge function: burning
+            Default merge function: burning
             """
+            out_data = np.zeros(tuple(out_fp.shape) + (self._num_bands,))
             for to_burn_fp, to_burn_data in zip(in_fps, in_arrays):
                 out_data[to_burn_fp.slice_in(out_fp, clip=True)] = to_burn_data[out_fp.slice_in(to_burn_fp, clip=True)]
             return out_data
@@ -545,6 +546,12 @@ class BackendRaster(object):
                             # testing if at least 1 of the collected queues is empty (1 queue per primitive)
                             if any([query.collected[primitive].empty() for primitive in query.collected]):
                                 break
+
+                            # asserting the available to collect are linked to the to compute
+                            to_collect_fps_of_compute = [self._graph.nodes[collect[1]]["footprint"] for collect in self._graph.out_edges(node_id)]
+                            if to_collect_fps_of_compute and query.to_collect[list(query.collected.keys())[0]][0] not in to_collect_fps_of_compute:
+                                break
+
                             collected_data = []
                             primitive_footprints = []
 
@@ -598,7 +605,6 @@ class BackendRaster(object):
                                     node["function"],
                                     (
                                         node["footprint"],
-                                        node["data"],
                                         node["in_fp"],
                                         node["in_data"]
                                     )
@@ -1142,7 +1148,6 @@ class BackendCachedRaster(BackendRaster):
                             footprint=to_merge,
                             future=None,
                             futures=[],
-                            data=np.zeros(tuple(to_write.shape) + (self._num_bands,)),
                             type="to_merge",
                             pool=self._merge_pool,
                             function=self._merge_data,
