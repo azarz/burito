@@ -104,7 +104,7 @@ def main():
         )
 
     tile_count = np.ceil(full_fp.rsize / 1000)
-    tiles = full_fp.tile_count(50,50)
+    tiles = full_fp.tile_count(7,7)
 
     print(tile_count)
 
@@ -113,9 +113,9 @@ def main():
         plt.show()
         gc.collect()
 
-    a = dot_raster.get_multi_data(tiles.flat)
-    # time.sleep(5)
-    del a
+    random_raster.get_multi_data(tiles.flat)
+    time.sleep(1)
+    del random_raster
     input()
 
 if __name__ == "__main__":

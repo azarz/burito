@@ -1,5 +1,5 @@
 """
-Tests of the rammuth library
+Tests of the burito library
 """
 
 import numpy as np

@@ -162,8 +162,6 @@ class Raster(object):
         self._queries = []
         self._new_queries = []
 
-        self._thread_storage = threading.local()
-
         self._graph = nx.DiGraph()
 
         def default_merge_data(out_fp, out_data, in_fps, in_arrays):
@@ -251,7 +249,6 @@ class Raster(object):
         return self._primitive_rasters.copy()
 
 
-
     def __len__(self):
         return int(self._num_bands)
 
@@ -309,7 +306,7 @@ class Raster(object):
                 # If the query has been dropped
                 if query.produced() is None:
                     self._num_pending[query] = 0
-                    to_delete_edges = nx.dfs_edges(self._graph, source=id(ordered_queries[0]))
+                    to_delete_edges = list(nx.dfs_edges(self._graph, source=id(ordered_queries[0])))
                     self._graph.remove_edges_from(to_delete_edges)
                     self._graph.remove_node(id(ordered_queries[0]))
                     self._queries.remove(ordered_queries[0])
@@ -924,6 +921,7 @@ class CachedRaster(Raster):
 
         for tile, band, dim in _blocks_of_footprint(cache_tile, bands):
             tilearray = array[:, :, dim][tile.slice_in(cache_tile)]
+            assert np.array_equal(tilearray.shape[0:2], cache_tile.shape)
             gdalband = gdal_ds.GetRasterBand(band)
             gdalband.WriteArray(tilearray)
 
