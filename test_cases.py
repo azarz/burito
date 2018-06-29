@@ -51,71 +51,71 @@ def main():
                         )
 
     
-    g_filter_raster = raster_factory(footprint=full_fp,
-        dtype='float32',
-        computation_function=gaussian_filter,
-        io_pool=g_io_pool,
-        computation_pool=g_cpu_pool,
-        primitives={"random": random_raster.get_multi_data_queue},
-        to_collect_of_to_compute=lambda fp: {"random": fp},
-        merge_pool=g_merge_pool
-        )
+    # g_filter_raster = raster_factory(footprint=full_fp,
+    #     dtype='float32',
+    #     computation_function=gaussian_filter,
+    #     io_pool=g_io_pool,
+    #     computation_pool=g_cpu_pool,
+    #     primitives={"random": random_raster.get_multi_data_queue},
+    #     to_collect_of_to_compute=lambda fp: {"random": fp},
+    #     merge_pool=g_merge_pool
+    #     )
 
-    m_filter_raster = raster_factory(footprint=full_fp,
-        dtype='float32',
-        computation_function=median_filter,
-        io_pool=g_io_pool,
-        computation_pool=g_cpu_pool,
-        primitives={"random": random_raster.get_multi_data_queue},
-        to_collect_of_to_compute=lambda fp: {"random": fp},
-        merge_pool=g_merge_pool
-        )
+    # m_filter_raster = raster_factory(footprint=full_fp,
+    #     dtype='float32',
+    #     computation_function=median_filter,
+    #     io_pool=g_io_pool,
+    #     computation_pool=g_cpu_pool,
+    #     primitives={"random": random_raster.get_multi_data_queue},
+    #     to_collect_of_to_compute=lambda fp: {"random": fp},
+    #     merge_pool=g_merge_pool
+    #     )
 
-    summed_raster = raster_factory(footprint=full_fp,
-        dtype='float32',
-        computation_function=summ,
-        io_pool=g_io_pool,
-        computation_pool=g_cpu_pool,
-        primitives={"gaussian": g_filter_raster.get_multi_data_queue, "median":m_filter_raster.get_multi_data_queue},
-        to_collect_of_to_compute=lambda fp: {"gaussian": fp, "median": fp},
-        merge_pool=g_merge_pool
-        )
-
-
-    sobel_raster = raster_factory(footprint=full_fp,
-        dtype='float32',
-        computation_function=sobel_filter,
-        io_pool=g_io_pool,
-        computation_pool=g_cpu_pool,
-        primitives={"gaussian": g_filter_raster.get_multi_data_queue},
-        to_collect_of_to_compute=lambda fp: {"gaussian": fp},
-        merge_pool=g_merge_pool
-        )
+    # summed_raster = raster_factory(footprint=full_fp,
+    #     dtype='float32',
+    #     computation_function=summ,
+    #     io_pool=g_io_pool,
+    #     computation_pool=g_cpu_pool,
+    #     primitives={"gaussian": g_filter_raster.get_multi_data_queue, "median":m_filter_raster.get_multi_data_queue},
+    #     to_collect_of_to_compute=lambda fp: {"gaussian": fp, "median": fp},
+    #     merge_pool=g_merge_pool
+    #     )
 
 
-    dot_raster = sobel_raster = raster_factory(footprint=full_fp,
-        dtype='float32',
-        computation_function=dot,
-        io_pool=g_io_pool,
-        computation_pool=g_cpu_pool,
-        primitives={"summ": summed_raster.get_multi_data_queue, "sobel": sobel_raster.get_multi_data_queue},
-        to_collect_of_to_compute=lambda fp: {"summ": fp, "sobel": fp},
-        merge_pool=g_merge_pool
-        )
+    # sobel_raster = raster_factory(footprint=full_fp,
+    #     dtype='float32',
+    #     computation_function=sobel_filter,
+    #     io_pool=g_io_pool,
+    #     computation_pool=g_cpu_pool,
+    #     primitives={"gaussian": g_filter_raster.get_multi_data_queue},
+    #     to_collect_of_to_compute=lambda fp: {"gaussian": fp},
+    #     merge_pool=g_merge_pool
+    #     )
+
+
+    # dot_raster = sobel_raster = raster_factory(footprint=full_fp,
+    #     dtype='float32',
+    #     computation_function=dot,
+    #     io_pool=g_io_pool,
+    #     computation_pool=g_cpu_pool,
+    #     primitives={"summ": summed_raster.get_multi_data_queue, "sobel": sobel_raster.get_multi_data_queue},
+    #     to_collect_of_to_compute=lambda fp: {"summ": fp, "sobel": fp},
+    #     merge_pool=g_merge_pool
+    #     )
 
     tile_count = np.ceil(full_fp.rsize / 1000)
     tiles = full_fp.tile_count(7,7)
 
     print(tile_count)
 
-    for array, fp in zip(dot_raster.get_multi_data(tiles.flat[0:3]), tiles.flat[0:3]):
-        plt.imshow(array)
-        plt.show()
-        gc.collect()
+    # for array, fp in zip(dot_raster.get_multi_data(tiles.flat[0:3]), tiles.flat[0:3]):
+    #     plt.imshow(array)
+    #     plt.show()
+    #     gc.collect()
 
     random_raster.get_multi_data(tiles.flat)
     time.sleep(1)
-    del random_raster
+    # del random_raster
     input()
 
 if __name__ == "__main__":

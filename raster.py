@@ -91,13 +91,204 @@ def is_tiling_valid(fp, tiles):
     return True
 
 
-
-
-
-
 class Raster(object):
+    def __init__(self,
+                 footprint,
+                 dtype,
+                 nbands,
+                 nodata,
+                 srs,
+                 computation_function,
+                 io_pool,
+                 computation_pool,
+                 primitives,
+                 to_collect_of_to_compute,
+                 computation_tiles,
+                 merge_pool,
+                 merge_function):
+
+        self._backend = BackendRaster(footprint,
+                                      dtype,
+                                      nbands,
+                                      nodata,
+                                      srs,
+                                      computation_function,
+                                      io_pool,
+                                      computation_pool,
+                                      primitives,
+                                      to_collect_of_to_compute,
+                                      computation_tiles,
+                                      merge_pool,
+                                      merge_function)
+
+        self._scheduler_thread = threading.Thread(target=self._backend._scheduler, daemon=True)
+        self._scheduler_thread.start()
+
+    def __del__(self):
+        self._backend._stop_scheduler = True
+
+
+
+    @property
+    def fp(self):
+        """
+        returns the raster footprint
+        """
+        return self._backend.fp
+
+    @property
+    def nbands(self):
+        """
+        returns the raster's number of bands'
+        """
+        return self._backend.nbands
+
+    @property
+    def nodata(self):
+        """
+        returns the raster nodata
+        """
+        return self._backend.nodata
+
+    @property
+    def wkt_origin(self):
+        """
+        returns the raster wkt origin
+        """
+        return self._backend.wkt_origin
+
+    @property
+    def dtype(self):
+        """
+        returns the raster dtype
+        """
+        return self._backend.dtype
+
+    @property
+    def pxsizex(self):
+        """
+        returns the raster 1D pixel size
+        """
+        return self._backend.pxsizex
+
+    @property
+    def primitives(self):
+        """
+        Returns dictionnary of raster primitives
+        """
+        return self._backend.primitives
+
+
+    def __len__(self):
+        return len(self._backend)
+
+
+
+    @property
+    def get_multi_data_queue(self):
+        """
+        returns a queue from a fp_iterable and can manage the context of the method
+        """
+
+        def _get_multi_data_queue(fp_iterable, band=-1, queue_size=5):
+            """
+            returns a queue from a fp_iterable
+            """
+
+            # Normalize and check band parameter
+            bands, is_flat = _tools.normalize_band_parameter(band, len(self), None)
+
+            fp_iterable = list(fp_iterable)
+            for fp in fp_iterable:
+                assert fp.same_grid(self.fp)
+            q = queue.Queue(queue_size)
+            query = Query(q, bands, is_flat)
+            to_produce = [(fp, "sleeping") for fp in fp_iterable]
+
+            query.to_produce += to_produce
+
+            self._backend._queries.append(query)
+            self._backend._new_queries.append(query)
+
+            return q
+
+        return GetDataWithPrimitive(self, _get_multi_data_queue)
+
+
+    def get_multi_data(self, fp_iterable, band=-1, queue_size=5):
+        """
+        returns a  generator from a fp_iterable
+        """
+        fp_iterable = list(fp_iterable)
+        out_queue = self.get_multi_data_queue(fp_iterable, band, queue_size)
+
+        def out_generator():
+            """
+            output generator from the queue. next() waits the .get() to end
+            """
+            for fp in fp_iterable:
+                assert fp.same_grid(self.fp)
+                result = out_queue.get()
+                assert np.array_equal(fp.shape, result.shape[0:2])
+                yield result
+
+        return out_generator()
+
+
+    def get_data(self, fp, band=-1):
+        """
+        returns a np array
+        """
+        return next(self.get_multi_data([fp], band))
+
+
+
+
+class CachedRaster(Raster):
+    def __init__(self,
+                 footprint,
+                 dtype,
+                 nbands,
+                 nodata,
+                 srs,
+                 computation_function,
+                 overwrite,
+                 cache_dir,
+                 cache_fps,
+                 io_pool,
+                 computation_pool,
+                 primitives,
+                 to_collect_of_to_compute,
+                 computation_tiles,
+                 merge_pool,
+                 merge_function):
+
+        self._backend = BackendCachedRaster(footprint,
+                                            dtype,
+                                            nbands,
+                                            nodata,
+                                            srs,
+                                            computation_function,
+                                            overwrite,
+                                            cache_dir,
+                                            cache_fps,
+                                            io_pool,
+                                            computation_pool,
+                                            primitives,
+                                            to_collect_of_to_compute,
+                                            computation_tiles,
+                                            merge_pool,
+                                            merge_function)
+
+        self._scheduler_thread = threading.Thread(target=self._backend._scheduler, daemon=True)
+        self._scheduler_thread.start()
+
+
+
+
+class BackendRaster(object):
     """
-    Abstract class defining the raster behaviour
+    class defining the raster behaviour
     """
     def __init__(self,
                  footprint,
@@ -185,8 +376,7 @@ class Raster(object):
         # Used to track the number of pending tasks
         self._num_pending = defaultdict(int)
 
-        self._scheduler_thread = threading.Thread(target=self._scheduler, daemon=True)
-        self._scheduler_thread.start()
+        self._stop_scheduler = False
 
 
     def _pressure_ratio(self, query):
@@ -265,6 +455,9 @@ class Raster(object):
         available_to_produce = set()
 
         while True:
+            if self._stop_scheduler:
+                print("going to sleep")
+                return
 
             self._clean_graph()
 
@@ -630,70 +823,10 @@ class Raster(object):
 
 
 
-    @property
-    def get_multi_data_queue(self):
-        """
-        returns a queue from a fp_iterable and can manage the context of the method
-        """
 
-        def _get_multi_data_queue(fp_iterable, band=-1, queue_size=5):
-            """
-            returns a queue from a fp_iterable
-            """
-
-            # Normalize and check band parameter
-            bands, is_flat = _tools.normalize_band_parameter(band, len(self), None)
-
-            fp_iterable = list(fp_iterable)
-            for fp in fp_iterable:
-                assert fp.same_grid(self._full_fp)
-            q = queue.Queue(queue_size)
-            query = Query(q, bands, is_flat)
-            to_produce = [(fp, "sleeping") for fp in fp_iterable]
-
-            query.to_produce += to_produce
-
-            self._queries.append(query)
-            self._new_queries.append(query)
-
-            return q
-
-        return GetDataWithPrimitive(self, _get_multi_data_queue)
-
-
-    def get_multi_data(self, fp_iterable, band=-1, queue_size=5):
-        """
-        returns a  generator from a fp_iterable
-        """
-        fp_iterable = list(fp_iterable)
-        out_queue = self.get_multi_data_queue(fp_iterable, band, queue_size)
-
-        def out_generator():
-            """
-            output generator from the queue. next() waits the .get() to end
-            """
-            for fp in fp_iterable:
-                assert fp.same_grid(self.fp)
-                result = out_queue.get()
-                assert np.array_equal(fp.shape, result.shape[0:2])
-                yield result
-
-        return out_generator()
-
-
-    def get_data(self, fp, band=-1):
-        """
-        returns a np array
-        """
-        return next(self.get_multi_data([fp], band))
-
-
-
-
-
-class CachedRaster(Raster):
+class BackendCachedRaster(BackendRaster):
     """
-    Cached implementation of abstract raster
+    Cached implementation of raster
     """
     def __init__(self,
                  footprint,
@@ -713,16 +846,7 @@ class CachedRaster(Raster):
                  merge_pool,
                  merge_function):
 
-        super().__init__(footprint, dtype, nbands, nodata, srs,
-                         computation_function,
-                         io_pool,
-                         computation_pool,
-                         primitives,
-                         to_collect_of_to_compute,
-                         computation_tiles,
-                         merge_pool,
-                         merge_function
-                        )
+
 
         self._cache_dir = cache_dir
         self._cache_tiles = cache_fps
@@ -741,6 +865,20 @@ class CachedRaster(Raster):
 
         # Used to keep duplicates in to_read
         self._to_read_in_occurencies_dict = defaultdict(int)
+
+        super().__init__(footprint, dtype, nbands, nodata, srs,
+                         computation_function,
+                         io_pool,
+                         computation_pool,
+                         primitives,
+                         to_collect_of_to_compute,
+                         computation_tiles,
+                         merge_pool,
+                         merge_function
+                        )
+
+
+
 
 
     def _to_check_of_to_produce(self, to_produce_fps):
@@ -809,7 +947,7 @@ class CachedRaster(Raster):
         """
         prefix = self._get_cache_tile_path_prefix(cache_tile)
         file_path = glob.glob(prefix + "*")
-        assert len(file_path) <= 1
+        assert len(file_path) <= 1, file_path
         return file_path
 
 
