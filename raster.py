@@ -940,7 +940,7 @@ class BackendCachedRaster(BackendRaster):
         Returns a string, which is a path to a cache tile from its fp
         """
         prefix = self._get_cache_tile_path_prefix(cache_tile)
-        file_path = glob.glob(prefix + "*")
+        file_path = glob.glob(prefix + "_0x*.tif")
         assert len(file_path) <= 1, file_path
         return file_path
 
