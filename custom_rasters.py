@@ -39,19 +39,22 @@ def derive_raster(raster, **kwargs):
 
     if 'computation_function' not in kwargs:
         # resample = not kwargs['fp'].same_grid(raster.fp)
-        kwargs['primitives'] = {'src': raster.get_multi_data_queue}
+        prim_key = f'src{raster.fp.scale[0] * 100:.0f}cm'
+        kwargs['primitives'] = {prim_key: raster.get_multi_data_queue}
         primitive_fp = raster.fp
         primitive_nodata = raster.nodata
 
         def make_primitive_fps(fp):
             return {
-                'src': (primitive_fp & fp).dilate(4),
+                prim_key: (primitive_fp & fp).dilate(4),
             }
 
         def compute_data(fp, parrs, pfps, _):
+            print(f'Resampling {pfps[0].rarea:12,}px->{fp.rarea:12,}px of {prim_key}')
             arr = buzz.Raster._remap(
                 pfps[0], fp, parrs[0], nodata=primitive_nodata,
             )
+            print(f'Resampled  {pfps[0].rarea:12,}px->{fp.rarea:12,}px of {prim_key}')
             return arr
 
         kwargs['computation_function'] = compute_data
@@ -101,9 +104,9 @@ def wrap_buzzard_raster(buzz_raster, **kwargs):
         else:
             ds = buzz.DataSource(allow_interpolation=True)
         with ds.open_araster(path).close as r:
-            print(f'Reading {fp.rarea:12,}px of {path.split("/")[-1]:10} ')
+            print(f'Reading    {fp.rarea:12,}px of {path.split("/")[-1]:10} ')
             arr = r.get_data(fp, band=-1)
-            print(f'   Read {fp.rarea:12,}px of {path.split("/")[-1]:10} ')
+            print(f'   Read    {fp.rarea:12,}px of {path.split("/")[-1]:10} ')
         return arr
 
     kwargs['computation_function'] = compute_data

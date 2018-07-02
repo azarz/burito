@@ -6,6 +6,7 @@ from pytilia.watcher import *
 import buzzard as buzz
 import scipy.ndimage as ndi
 import numpy as np
+import shapely.geometry as sg
 
 from custom_rasters import *
 
@@ -53,6 +54,8 @@ def main():
         orthos[scale] = rr
         r = rr
 
+
+    poly = sg.Point(*dsm.fp.c).buffer(10)
     imgs = [
         # ortho.get_multi_data([ortho.fp]),
         # *[r.get_multi_data([r.fp]) for r in orthos.values()],
@@ -60,11 +63,11 @@ def main():
 
         # *[r.get_multi_data([r.fp]) for r in dsms.values()],
 
-        dsm.get_multi_data([dsm.fp]),
-        dsms[0.16].get_multi_data([dsms[0.16].fp]),
-        dsms[0.32].get_multi_data([dsms[0.32].fp]),
-        dsms[0.64].get_multi_data([dsms[0.64].fp]),
-        dsms[1.28].get_multi_data([dsms[1.28].fp]),
+        # dsm.get_multi_data([dsm.fp & poly]),
+        dsms[0.16].get_multi_data([dsms[0.16].fp & poly]),
+        dsms[0.32].get_multi_data([dsms[0.32].fp & poly]),
+        dsms[0.64].get_multi_data([dsms[0.64].fp & poly]),
+        dsms[1.28].get_multi_data([dsms[1.28].fp & poly]),
 
     ]
     extents = [dsm.fp.extent]  * len(imgs)
