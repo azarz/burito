@@ -481,13 +481,13 @@ class BackendRaster(object):
 
                 # If all to_produced was consumed: query ended
                 if not query.to_produce:
-                    self._num_pending[query] = 0
+                    self._num_pending[id(query)] = 0
                     self._queries.remove(query)
                     continue
 
                 # If the query has been dropped
                 if query.produced() is None:
-                    self._num_pending[query] = 0
+                    self._num_pending[id(query)] = 0
                     to_delete_edges = list(nx.dfs_edges(self._graph, source=id(query)))
                     self._graph.remove_edges_from(to_delete_edges)
                     self._graph.remove_node(id(query))
@@ -545,13 +545,13 @@ class BackendRaster(object):
                         if node["type"] == "to_compute" and node["future"] is None:
                             # testing if at least 1 of the collected queues is empty (1 queue per primitive)
                             if any([query.collected[primitive].empty() for primitive in query.collected]):
-                                break
+                                continue
 
                             # asserting the available to collect are linked to the to compute
                             to_collect_fps_of_compute = [self._graph.nodes[collect[1]]["footprint"] for collect in self._graph.out_edges(node_id)]
                             if to_collect_fps_of_compute and query.to_collect[list(query.collected.keys())[0]][0] not in to_collect_fps_of_compute:
-                                break
-                                
+                                continue
+
                             if threadPoolTaskCounter[id(node["pool"])] < node["pool"]._processes:
                                 collected_data = []
                                 primitive_footprints = []
@@ -560,7 +560,7 @@ class BackendRaster(object):
                                     collected_data.append(query.collected[collected_primitive].get(block=False))
                                     primitive_footprints.append(query.to_collect[collected_primitive].pop(0))
 
-                            
+
                                 node["future"] = self._computation_pool.apply_async(
                                     self._compute_data,
                                     (
@@ -744,7 +744,7 @@ class BackendRaster(object):
 
                 to_merge = to_produce[0]
 
-                to_merge_uid = _get_graph_uid(to_merge, "to_merge")
+                to_merge_uid = _get_graph_uid(to_merge, "to_merge" + str(id(new_query)))
                 if to_merge_uid in self._graph.nodes():
                     self._graph.nodes[to_merge_uid]["linked_to_produce"].add(to_produce_uid)
                 else:
@@ -768,7 +768,7 @@ class BackendRaster(object):
                 to_merge_uid = None
 
             for to_compute in multi_to_compute:
-                to_compute_uid = _get_graph_uid(to_compute, "to_compute")
+                to_compute_uid = _get_graph_uid(to_compute, "to_compute" + str(id(new_query)))
                 if to_compute_uid in self._graph.nodes():
                     self._graph.nodes[to_compute_uid]["linked_to_produce"].add(to_produce_uid)
                 else:
