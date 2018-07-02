@@ -36,25 +36,37 @@ def main():
 
     # ******************************************************************************************* **
     # Open resampled rasters
+    scales = [0.16, 0.32, 0.64, 1.28]
+
+
     dsms = collections.OrderedDict()
     r = dsm
-    scales = [0.16, 0.32, 0.64, 1.28]
-    # for scale in [0.16, 0.32]:
     for scale in scales:
-        rr = derive_raster(r, fp=r.fp.intersection(r.fp, scale=scale, alignment=(0, 0)).erode(4))
+        rr = derive_raster(r, fp=r.fp.intersection(r.fp, scale=scale, alignment=(0, 0)))
         dsms[scale] = rr
         r = rr
 
+    orthos = collections.OrderedDict()
+    r = ortho
+    for scale in scales:
+        rr = derive_raster(r, fp=r.fp.intersection(r.fp, scale=scale, alignment=(0, 0)))
+        orthos[scale] = rr
+        r = rr
+
     imgs = [
+        # ortho.get_multi_data([ortho.fp]),
+        # *[r.get_multi_data([r.fp]) for r in orthos.values()],
+
+
+        # *[r.get_multi_data([r.fp]) for r in dsms.values()],
+
         dsm.get_multi_data([dsm.fp]),
         dsms[0.16].get_multi_data([dsms[0.16].fp]),
         dsms[0.32].get_multi_data([dsms[0.32].fp]),
         dsms[0.64].get_multi_data([dsms[0.64].fp]),
         dsms[1.28].get_multi_data([dsms[1.28].fp]),
-        # dsm32.get_multi_data([dsm32.fp]),
-        # ortho.get_multi_data([ortho.fp]),
+
     ]
-    # + [r.get_multi_data([r.fp]) for r in dsms.values()]
     extents = [dsm.fp.extent]  * len(imgs)
 
         # dsm16.fp.extent,
