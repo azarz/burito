@@ -47,9 +47,9 @@ DIR_NAMES = {
 CACHE_DIR = "./.cache"
 
 
-g_io_pool = mp.pool.ThreadPool(1)
+g_io_pool = mp.pool.ThreadPool(6)
 g_cpu_pool = mp.pool.ThreadPool(1)
-g_merge_pool = mp.pool.ThreadPool(1)
+g_merge_pool = mp.pool.ThreadPool(3)
 g_gpu_pool = mp.pool.ThreadPool(1)
 
 

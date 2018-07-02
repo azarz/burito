@@ -551,15 +551,16 @@ class BackendRaster(object):
                             to_collect_fps_of_compute = [self._graph.nodes[collect[1]]["footprint"] for collect in self._graph.out_edges(node_id)]
                             if to_collect_fps_of_compute and query.to_collect[list(query.collected.keys())[0]][0] not in to_collect_fps_of_compute:
                                 break
-
-                            collected_data = []
-                            primitive_footprints = []
-
-                            for collected_primitive in query.collected.keys():
-                                collected_data.append(query.collected[collected_primitive].get(block=False))
-                                primitive_footprints.append(query.to_collect[collected_primitive].pop(0))
-
+                                
                             if threadPoolTaskCounter[id(node["pool"])] < node["pool"]._processes:
+                                collected_data = []
+                                primitive_footprints = []
+
+                                for collected_primitive in query.collected.keys():
+                                    collected_data.append(query.collected[collected_primitive].get(block=False))
+                                    primitive_footprints.append(query.to_collect[collected_primitive].pop(0))
+
+                            
                                 node["future"] = self._computation_pool.apply_async(
                                     self._compute_data,
                                     (
@@ -949,7 +950,7 @@ class BackendCachedRaster(BackendRaster):
         """
         reads cache data
         """
-        print(self.h, "reading ")
+        print(self.h, "reading")
         filepath = self._get_cache_tile_path(cache_tile)[0]
 
         # Open a raster datasource
