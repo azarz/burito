@@ -488,10 +488,10 @@ class BackendRaster(object):
                 # If the query has been dropped
                 if query.produced() is None:
                     self._num_pending[query] = 0
-                    to_delete_edges = list(nx.dfs_edges(self._graph, source=id(ordered_queries[0])))
+                    to_delete_edges = list(nx.dfs_edges(self._graph, source=id(query)))
                     self._graph.remove_edges_from(to_delete_edges)
-                    self._graph.remove_node(id(ordered_queries[0]))
-                    self._queries.remove(ordered_queries[0])
+                    self._graph.remove_node(id(query))
+                    self._queries.remove(query)
                     continue
 
                 # if the emptiest query is full, waiting
