@@ -742,7 +742,7 @@ class BackendRaster(object):
             if isinstance(self._computation_tiles, np.ndarray):
                 multi_to_compute = self._to_compute_of_to_produce(to_produce[0])
 
-                to_merge = to_produce
+                to_merge = to_produce[0]
 
                 to_merge_uid = _get_graph_uid(to_merge, "to_merge")
                 if to_merge_uid in self._graph.nodes():
