@@ -37,7 +37,8 @@ def main():
 
     # ******************************************************************************************* **
     # Open resampled rasters
-    scales = [0.16, 0.32, 0.64, 1.28]
+    scales = [0.16, 0.32]
+    # scales = [0.16, 0.32, 0.64, 1.28]
 
 
     dsms = collections.OrderedDict()
@@ -66,8 +67,8 @@ def main():
         # dsm.get_multi_data([dsm.fp & poly]),
         dsms[0.16].get_multi_data([dsms[0.16].fp & poly]),
         dsms[0.32].get_multi_data([dsms[0.32].fp & poly]),
-        dsms[0.64].get_multi_data([dsms[0.64].fp & poly]),
-        dsms[1.28].get_multi_data([dsms[1.28].fp & poly]),
+        # dsms[0.64].get_multi_data([dsms[0.64].fp & poly]),
+        # dsms[1.28].get_multi_data([dsms[1.28].fp & poly]),
 
     ]
     extents = [dsm.fp.extent]  * len(imgs)
