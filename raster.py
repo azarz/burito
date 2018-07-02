@@ -482,7 +482,7 @@ class BackendRaster(object):
                 # If all to_produced was consumed: query ended
                 if not query.to_produce:
                     self._num_pending[query] = 0
-                    self._queries.remove(ordered_queries[0])
+                    self._queries.remove(query)
                     continue
 
                 # If the query has been dropped
