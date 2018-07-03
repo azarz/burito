@@ -396,18 +396,19 @@ class BackendRaster(object):
 
         self._computation_idx = rtree.index.Index()
 
-        computation_fps = list(computation_tiles.flat)
-        assert isinstance(computation_fps[0], buzz.Footprint)
-        pxsizex = min(fp.pxsize[0] for fp in computation_fps)
-        bound_inset = np.r_[
-            pxsizex / 4,
-            pxsizex / 4,
-            pxsizex / -4,
-            pxsizex / -4,
-        ]
+        if computation_tiles is not None:
+            computation_fps = list(computation_tiles.flat)
+            assert isinstance(computation_fps[0], buzz.Footprint)
+            pxsizex = min(fp.pxsize[0] for fp in computation_fps)
+            bound_inset = np.r_[
+                pxsizex / 4,
+                pxsizex / 4,
+                pxsizex / -4,
+                pxsizex / -4,
+            ]
 
-        for i, fp in enumerate(computation_fps):
-            self._computation_idx.insert(i, fp.bounds + bound_inset)
+            for i, fp in enumerate(computation_fps):
+                self._computation_idx.insert(i, fp.bounds + bound_inset)
 
 
     def _pressure_ratio(self, query):
@@ -939,6 +940,16 @@ class BackendCachedRaster(BackendRaster):
 
         assert is_tiling_valid(footprint, cache_tiles.flat)
 
+        if overwrite:
+            shutil.rmtree(cache_dir)
+            os.makedirs(cache_dir, exist_ok=True)
+
+        # Array used to track the state of cahce tiles:
+        # None: not yet met
+        # False: met, has to be written
+        # True: met, already written and valid
+        self._cache_checksum_array = np.empty(cache_tiles.shape, dtype=object)
+
         self._cache_idx = rtree.index.Index()
         cache_fps = list(cache_tiles.flat)
         assert isinstance(cache_fps[0], buzz.Footprint)
@@ -953,18 +964,6 @@ class BackendCachedRaster(BackendRaster):
         for i, fp in enumerate(cache_fps):
             self._cache_idx.insert(i, fp.bounds + bound_inset)
 
-        if overwrite:
-            shutil.rmtree(cache_dir)
-            os.makedirs(cache_dir, exist_ok=True)
-
-        # Array used to track the state of cahce tiles:
-        # None: not yet met
-        # False: met, has to be written
-        # True: met, already written and valid
-        self._cache_checksum_array = np.empty(cache_fps.shape, dtype=object)
-
-        # Used to keep duplicates in to_read
-        self._to_read_in_occurencies_dict = defaultdict(int)
 
         super().__init__(footprint, dtype, nbands, nodata, srs,
                          computation_function,
