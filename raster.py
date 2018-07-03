@@ -495,6 +495,7 @@ class BackendRaster(object):
 
 
         while True:
+            time.sleep(0.05)
             if self._stop_scheduler:
                 print("going to sleep")
                 return
