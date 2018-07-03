@@ -15,6 +15,8 @@ import shutil
 import sys
 import queue
 import itertools
+import collections
+import uuid
 
 import numpy as np
 import networkx as nx
@@ -32,9 +34,18 @@ from burito.get_data_with_primitive import GetDataWithPrimitive
 
 threadPoolTaskCounter = SingletonCounter()
 
-def _get_graph_uid(fp, _type):
-    return hash(repr(fp) + _type)
+qryids = collections.defaultdict(lambda: f'{len(qryids):02d}')
+queids = collections.defaultdict(lambda: f'{len(queids):02d}')
+_debug_lock = threading.RLock()
 
+def qeinfo(q):
+    with _debug_lock:
+        return f'{queids[q] if q is not None else None}'
+
+def qrinfo(query):
+    with _debug_lock:
+        q = query.produced()
+        return f'qr:{qryids[query]} in:{[qeinfo(q) for q in query.collected.values()]!s:6} out:{qeinfo(query.produced())}'
 
 
 
@@ -89,6 +100,24 @@ def is_tiling_valid(fp, tiles):
             idx.insert(i, bounds)
 
     return True
+
+
+def quick_share_area(fp, other):
+    idx = rtree.index.Index()
+
+    pxsizex = min(fp.pxsize[0], other.pxsize[0])
+    bound_inset = np.r_[
+        pxsizex / 4,
+        pxsizex / 4,
+        -pxsizex / 4,
+        -pxsizex / 4,
+    ]
+
+    idx.insert(0, fp.bounds + bound_inset)
+    idx.insert(1, other.bounds + bound_inset)
+
+    return False
+
 
 
 class Raster(object):
@@ -238,7 +267,7 @@ class Raster(object):
 
             query.to_produce += to_produce
 
-            self._backend._queries.append(query)
+            # self._backend._queries.append(query)
             self._backend._new_queries.append(query)
 
             return q
@@ -357,15 +386,29 @@ class BackendRaster(object):
         else:
             self._merge_data = merge_function
 
-        # Used to keep duplicates in to_produce
-        self._to_produce_in_occurencies_dict = defaultdict(int)
-        self._to_produce_out_occurencies_dict = defaultdict(int)
-        self._to_produce_available_occurencies_dict = defaultdict(int)
+        # Used to track the number of pending tasks
+        self._num_pending = defaultdict(int)
 
         # Used to track the number of pending tasks
         self._num_pending = defaultdict(int)
 
         self._stop_scheduler = False
+
+        self._computation_idx = rtree.index.Index()
+
+        if computation_tiles is not None:
+            computation_fps = list(computation_tiles.flat)
+            assert isinstance(computation_fps[0], buzz.Footprint)
+            pxsizex = min(fp.pxsize[0] for fp in computation_fps)
+            bound_inset = np.r_[
+                pxsizex / 4,
+                pxsizex / 4,
+                pxsizex / -4,
+                pxsizex / -4,
+            ]
+
+            for i, fp in enumerate(computation_fps):
+                self._computation_idx.insert(i, fp.bounds + bound_inset)
 
 
     def _pressure_ratio(self, query):
@@ -437,56 +480,80 @@ class BackendRaster(object):
 
 
     def _scheduler(self):
-        header = f"{list(self._primitive_functions.keys())!s:20} {self._num_bands!s:3} {self.dtype!s:10}"
+        header = '{!s:25}'.format('<prim[{}] {} {}>'.format(
+            ','.join(self._primitive_functions.keys()),
+            self._num_bands,
+            self.dtype,
+        ))
+        # header = f"{list(self._primitive_functions.keys())!s:20} {self._num_bands!s:3} {self.dtype!s:10}"
         self.h = header
         print(header, "scheduler in")
         # list of available and produced to_collect footprints
         available_to_produce = set()
+        put_counter = collections.Counter()
+        get_counter = collections.Counter()
+
 
         while True:
+            time.sleep(0.05)
             if self._stop_scheduler:
                 print("going to sleep")
                 return
 
             self._clean_graph()
 
+            assert len(set(map(id, self._queries))) == len(self._queries)
+            assert len(set(map(id, self._new_queries))) == len(self._new_queries)
+
             # Consuming the new queries
             while self._new_queries:
-                print(header, "updating graph ")
+                # print(header, "updating graph ")
 
                 # a = datetime.datetime.now()
-                new_query = self._new_queries.pop(0)
-                # b = datetime.datetime.now() - a
-                # print(header, "popped, query size:", len(new_query.to_produce), b.total_seconds())
+                query = self._new_queries.pop(0)
+                self._queries.append(query)
 
+                # print(dir(query))
+                # b = datetime.datetime.now() - a
+                # print(header, "popped, query size:", len(query.to_produce), b.total_seconds())
                 if isinstance(self, BackendCachedRaster):
                     # print(header, "check array", self._cache_checksum_array.flatten())
                     # a = datetime.datetime.now()
                     # print(header, "checking ")
-                    self._check_query(new_query)
+                    self._check_query(query)
                     # b = datetime.datetime.now() - a
                     # print(header, "checked ", b.total_seconds())
                     # print(header, "check array after check", self._cache_checksum_array.flatten())
 
                 # a = datetime.datetime.now()
-                self._update_graph_from_query(new_query)
+                self._update_graph_from_query(query)
+
+                print(self.h, qrinfo(query), f'new query with {len(query.to_produce)} to_produce, {list(len(p) for p in query.to_collect.values())} to_collect')
                 # b = datetime.datetime.now() - a
-                print(header, "updating ended ")
+                # print(self.h, qrinfo(query), f'new query with {len(query.to_produce)} to_produce, {len(query.to_collect)} to_collect')
 
 
             # ordering queries accroding to their pressure
+            assert len(set(map(id, self._queries))) == len(self._queries)
+            assert len(set(map(id, self._new_queries))) == len(self._new_queries)
+
             ordered_queries = sorted(self._queries, key=self._pressure_ratio)
+            # ordered_queries = list(self._queries)
+
+
             # getting the emptiest query
             for query in ordered_queries:
 
                 # If all to_produced was consumed: query ended
                 if not query.to_produce:
+                    print(self.h, qrinfo(query), f'cleaning: treated all produce')
                     self._num_pending[id(query)] = 0
                     self._queries.remove(query)
                     continue
 
                 # If the query has been dropped
                 if query.produced() is None:
+                    print(self.h, qrinfo(query), f'cleaning: dropped by main program')
                     self._num_pending[id(query)] = 0
                     to_delete_edges = list(nx.dfs_edges(self._graph, source=id(query)))
                     self._graph.remove_edges_from(to_delete_edges)
@@ -502,18 +569,17 @@ class BackendRaster(object):
                 # while there is space
                 while query.produced().qsize() + self._num_pending[id(query)] < query.produced().maxsize and query.to_produce[-1][1] == "sleeping":
                     # getting the first sleeping to_produce
-                    to_produce_available = [to_produce[0] for to_produce in query.to_produce if to_produce[1] == "sleeping"][0]
+
+                    first_sleeping_i = [to_produce[1] for to_produce in query.to_produce].index('sleeping')
+
+                    to_produce_available = query.to_produce[first_sleeping_i][0]
                     # getting its id in the graph
-                    to_produce_available_id = _get_graph_uid(
-                        to_produce_available,
-                        "to_produce" + str(self._to_produce_available_occurencies_dict[to_produce_available])
-                    )
+                    to_produce_available_id = query.node_id_of_produce[first_sleeping_i]
 
                     available_to_produce.add(to_produce_available_id)
                     query.to_produce[query.to_produce.index((to_produce_available, "sleeping"))] = (to_produce_available, "pending")
 
                     self._num_pending[id(query)] += 1
-                    self._to_produce_available_occurencies_dict[to_produce_available] += 1
 
 
                 # iterating through the graph
@@ -522,7 +588,8 @@ class BackendRaster(object):
                         continue
 
                     # beginning at to_produce
-                    first_node_id = _get_graph_uid(to_produce[0], "to_produce" + str(self._to_produce_out_occurencies_dict[to_produce[0]]))
+                    first_node_id = query.node_id_of_produce[index]
+
                     # going as deep as possible
                     depth_node_ids = nx.dfs_postorder_nodes(self._graph.copy(), source=first_node_id)
 
@@ -556,7 +623,13 @@ class BackendRaster(object):
                                 collected_data = []
                                 primitive_footprints = []
 
+                                get_counter[query] += 1
+                                print(self.h, qrinfo(query), f'compute data for the {get_counter[query]:02d}th time node_id:({node_id})')
+
                                 for collected_primitive in query.collected.keys():
+
+
+
                                     collected_data.append(query.collected[collected_primitive].get(block=False))
                                     primitive_footprints.append(query.to_collect[collected_primitive].pop(0))
 
@@ -587,9 +660,14 @@ class BackendRaster(object):
                                     if node["is_flat"]:
                                         node["data"] = node["data"].squeeze(axis=-1)
                                     query.produced().put(node["data"].astype(self._dtype), timeout=1e-2)
-                                query.to_produce.pop(0)
 
-                                self._to_produce_out_occurencies_dict[to_produce[0]] += 1
+
+                                query.to_produce.pop(0)
+                                query.node_id_of_produce.pop(0)
+
+                                put_counter[query] += 1
+                                print(self.h, qrinfo(query), f'    put data for the {put_counter[query]:02d}th time, {len(query.to_produce):02d} left')
+
                                 self._graph.remove_node(node_id)
 
                                 self._num_pending[id(query)] -= 1
@@ -689,19 +767,15 @@ class BackendRaster(object):
         }
         out: {"prim_1": queue_1, "prim_2": queue_2, ..., "prim_p": queue_p}
         """
-        print(self.h, "collecting")
+        # print(self.h, "collecting")
         results = {}
         for primitive in self._primitive_functions.keys():
             results[primitive] = self._primitive_functions[primitive](to_collect[primitive])
         return results
 
     def _to_compute_of_to_produce(self, fp):
-        to_compute_list = []
-        for computation_tile in self._computation_tiles.flat:
-            if fp.share_area(computation_tile):
-                to_compute_list.append(computation_tile)
-
-        return to_compute_list
+        to_compute_list = self._computation_idx.intersection(fp.bounds)
+        return [list(self._computation_tiles.flat)[i] for i in to_compute_list]
 
 
     def _update_graph_from_query(self, new_query):
@@ -719,13 +793,19 @@ class BackendRaster(object):
         # initializing to_collect dictionnary
         new_query.to_collect = {key: [] for key in self._primitive_functions.keys()}
 
+        new_query.node_id_of_produce = [
+            str(uuid.uuid4())
+            for _ in range(len(new_query.to_produce))
+        ]
+
         self._graph.add_node(
             id(new_query)
         )
-
-        for to_produce in new_query.to_produce:
-            to_produce_uid = _get_graph_uid(to_produce[0], "to_produce" + str(self._to_produce_in_occurencies_dict[to_produce[0]]))
-            self._to_produce_in_occurencies_dict[to_produce[0]] += 1
+        time_dict = defaultdict(float)
+        counter = defaultdict(int)
+        for to_produce, to_produce_uid in zip(new_query.to_produce, new_query.node_id_of_produce):
+            start = datetime.datetime.now()
+            print(self.h, qrinfo(new_query), f'{"to_produce":>15}', to_produce_uid)
             self._graph.add_node(
                 to_produce_uid,
                 futures=[],
@@ -739,12 +819,11 @@ class BackendRaster(object):
 
             self._graph.add_edge(id(new_query), to_produce_uid)
 
-            if isinstance(self._computation_tiles, np.ndarray):
-                multi_to_compute = self._to_compute_of_to_produce(to_produce[0])
-
+            if self._computation_tiles is not None:
                 to_merge = to_produce[0]
 
-                to_merge_uid = _get_graph_uid(to_merge, "to_merge" + str(id(new_query)))
+                to_merge_uid = str(uuid.uuid4())
+                print(self.h, qrinfo(new_query), f'    {"to_merge":>15}', to_merge_uid)
                 if to_merge_uid in self._graph.nodes():
                     self._graph.nodes[to_merge_uid]["linked_to_produce"].add(to_produce_uid)
                 else:
@@ -763,12 +842,17 @@ class BackendRaster(object):
                     )
                 self._graph.add_edge(to_produce_uid, to_merge_uid)
 
+                multi_to_compute = self._to_compute_of_to_produce(to_merge)
             else:
                 multi_to_compute = [to_produce[0]]
                 to_merge_uid = None
+            time_dict["produce"] += (datetime.datetime.now() - start).total_seconds()
 
             for to_compute in multi_to_compute:
-                to_compute_uid = _get_graph_uid(to_compute, "to_compute" + str(id(new_query)))
+                start = datetime.datetime.now()
+                to_compute_uid = str(uuid.uuid4())
+                print(self.h, qrinfo(new_query), f'        {"to_compute":>15}', to_compute_uid)
+
                 if to_compute_uid in self._graph.nodes():
                     self._graph.nodes[to_compute_uid]["linked_to_produce"].add(to_produce_uid)
                 else:
@@ -790,16 +874,22 @@ class BackendRaster(object):
 
                 if self._to_collect_of_to_compute is None:
                     continue
+                time_dict["compute1"] += (datetime.datetime.now() - start).total_seconds()
+                start = datetime.datetime.now()
                 multi_to_collect = self._to_collect_of_to_compute(to_compute)
+                counter["multi_to_c"] += 1
+                time_dict["compute2"] += (datetime.datetime.now() - start).total_seconds()
+                start = datetime.datetime.now()
+                np.arange(10000)**2**0.5
+                time_dict["compute3"] += (datetime.datetime.now() - start).total_seconds()
+                start = datetime.datetime.now()
 
                 assert multi_to_collect.keys() == self._primitive_functions.keys()
 
                 for key in multi_to_collect:
-                    if multi_to_collect[key] not in new_query.to_collect[key]:
-                        new_query.to_collect[key].append(multi_to_collect[key])
-
-                for key in multi_to_collect:
-                    to_collect_uid = _get_graph_uid(multi_to_collect[key], "to_collect" + key + str(id(new_query)))
+                    new_query.to_collect[key].append(multi_to_collect[key])
+                    to_collect_uid = str(uuid.uuid4())
+                    print(self.h, qrinfo(new_query), f'            {"to_collect":>15}', to_collect_uid)
                     if to_collect_uid in self._graph.nodes():
                         self._graph.nodes[to_collect_uid]["linked_to_produce"].add(to_produce_uid)
                     else:
@@ -813,7 +903,9 @@ class BackendRaster(object):
                             bands=new_query.bands
                         )
                     self._graph.add_edge(to_compute_uid, to_collect_uid)
-
+                
+            print(time_dict)
+            print(counter)
         new_query.collected = self._collect_data(new_query.to_collect)
 
 
@@ -832,7 +924,7 @@ class BackendCachedRaster(BackendRaster):
                  computation_function,
                  overwrite,
                  cache_dir,
-                 cache_fps,
+                 cache_tiles,
                  io_pool,
                  computation_pool,
                  primitives,
@@ -844,9 +936,9 @@ class BackendCachedRaster(BackendRaster):
 
 
         self._cache_dir = cache_dir
-        self._cache_tiles = cache_fps
+        self._cache_tiles = cache_tiles
 
-        assert is_tiling_valid(footprint, cache_fps.flat)
+        assert is_tiling_valid(footprint, cache_tiles.flat)
 
         if overwrite:
             shutil.rmtree(cache_dir)
@@ -856,10 +948,22 @@ class BackendCachedRaster(BackendRaster):
         # None: not yet met
         # False: met, has to be written
         # True: met, already written and valid
-        self._cache_checksum_array = np.empty(cache_fps.shape, dtype=object)
+        self._cache_checksum_array = np.empty(cache_tiles.shape, dtype=object)
 
-        # Used to keep duplicates in to_read
-        self._to_read_in_occurencies_dict = defaultdict(int)
+        self._cache_idx = rtree.index.Index()
+        cache_fps = list(cache_tiles.flat)
+        assert isinstance(cache_fps[0], buzz.Footprint)
+        pxsizex = min(fp.pxsize[0] for fp in cache_fps)
+        bound_inset = np.r_[
+            pxsizex / 4,
+            pxsizex / 4,
+            pxsizex / -4,
+            pxsizex / -4,
+        ]
+
+        for i, fp in enumerate(cache_fps):
+            self._cache_idx.insert(i, fp.bounds + bound_inset)
+
 
         super().__init__(footprint, dtype, nbands, nodata, srs,
                          computation_function,
@@ -1078,13 +1182,17 @@ class BackendCachedRaster(BackendRaster):
         # initializing to_collect dictionnary
         new_query.to_collect = {key: [] for key in self._primitive_functions.keys()}
 
+        new_query.node_id_of_produce = [
+            str(uuid.uuid4())
+            for _ in range(len(new_query.to_produce))
+        ]
+
         self._graph.add_node(
             id(new_query)
         )
 
-        for to_produce in new_query.to_produce:
-            to_produce_uid = _get_graph_uid(to_produce[0], "to_produce" + str(self._to_produce_in_occurencies_dict[to_produce[0]]))
-            self._to_produce_in_occurencies_dict[to_produce[0]] += 1
+        for to_produce, to_produce_uid in zip(new_query.to_produce, new_query.node_id_of_produce):
+
             self._graph.add_node(
                 to_produce_uid,
                 footprint=to_produce[0],
@@ -1101,8 +1209,7 @@ class BackendCachedRaster(BackendRaster):
             self._graph.add_edge(id(new_query), to_produce_uid)
 
             for to_read in to_read_tiles:
-                to_read_uid = _get_graph_uid(to_read, "to_read" + str(self._to_read_in_occurencies_dict[to_read]))
-                self._to_read_in_occurencies_dict[to_read] += 1
+                to_read_uid = str(uuid.uuid4())
 
                 self._graph.add_node(
                     to_read_uid,
@@ -1122,7 +1229,7 @@ class BackendCachedRaster(BackendRaster):
                 if not self._is_written(to_read):
                     to_write = to_read
 
-                    to_write_uid = _get_graph_uid(to_write, "to_write")
+                    to_write_uid = str(repr(to_write) + "to_write")
                     if to_write_uid in self._graph.nodes():
                         self._graph.nodes[to_write_uid]["linked_to_produce"].add(to_produce_uid)
                     else:
@@ -1140,7 +1247,7 @@ class BackendCachedRaster(BackendRaster):
                     self._graph.add_edge(to_read_uid, to_write_uid)
 
                     to_merge = to_write
-                    to_merge_uid = _get_graph_uid(to_merge, "to_merge")
+                    to_merge_uid = str(repr(to_merge) + "to_merge")
                     if to_merge_uid in self._graph.nodes():
                         self._graph.nodes[to_merge_uid]["linked_to_produce"].add(to_produce_uid)
                     else:
@@ -1162,7 +1269,7 @@ class BackendCachedRaster(BackendRaster):
                     to_compute_multi = self._to_compute_of_to_write(to_write)
 
                     for to_compute in to_compute_multi:
-                        to_compute_uid = _get_graph_uid(to_compute, "to_compute")
+                        to_compute_uid = str(repr(to_compute) + "to_compute")
                         if to_compute_uid in self._graph.nodes():
                             self._graph.nodes[to_compute_uid]["linked_to_produce"].add(to_produce_uid)
                         else:
@@ -1189,7 +1296,7 @@ class BackendCachedRaster(BackendRaster):
                             if multi_to_collect[key] not in new_query.to_collect[key]:
                                 new_query.to_collect[key].append(multi_to_collect[key])
 
-                            to_collect_uid = _get_graph_uid(multi_to_collect[key], "to_collect" + key + str(id(new_query)))
+                            to_collect_uid = str(uuid.uuid4())
                             if to_collect_uid in self._graph.nodes():
                                 self._graph.nodes[to_collect_uid]["linked_to_produce"].add(to_produce_uid)
                             else:
@@ -1208,20 +1315,12 @@ class BackendCachedRaster(BackendRaster):
 
 
     def _to_read_of_to_produce(self, fp):
-        to_read_list = []
-        for cache_tile in self._cache_tiles.flat:
-            if fp.share_area(cache_tile):
-                to_read_list.append(cache_tile)
-
-        return to_read_list
+        to_read_list = self._cache_idx.intersection(fp.bounds)
+        return [list(self._cache_tiles.flat)[i] for i in to_read_list]
 
     def _is_written(self, cache_fp):
         return self._cache_checksum_array[np.where(self._cache_tiles == cache_fp)]
 
     def _to_compute_of_to_write(self, fp):
-        to_compute_list = []
-        for computation_tile in self._computation_tiles.flat:
-            if fp.share_area(computation_tile):
-                to_compute_list.append(computation_tile)
-
-        return to_compute_list
+        to_compute_list = self._computation_idx.intersection(fp.bounds)
+        return [list(self._computation_tiles.flat)[i] for i in to_compute_list]
