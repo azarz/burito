@@ -495,7 +495,6 @@ class BackendRaster(object):
 
 
         while True:
-            time.sleep(0.05)
             if self._stop_scheduler:
                 print("going to sleep")
                 return
@@ -538,8 +537,6 @@ class BackendRaster(object):
             assert len(set(map(id, self._new_queries))) == len(self._new_queries)
 
             ordered_queries = sorted(self._queries, key=self._pressure_ratio)
-            # ordered_queries = list(self._queries)
-
 
             # getting the emptiest query
             for query in ordered_queries:
@@ -1074,7 +1071,7 @@ class BackendCachedRaster(BackendRaster):
 
         to_read_fp = produce_fp.intersection(cache_tile)
 
-        rtlx, rtly = to_read_fp.spatial_to_raster(to_read_fp.tl)
+        rtlx, rtly = cache_tile.spatial_to_raster(to_read_fp.tl)
 
         assert rtlx >= 0 and rtlx < cache_tile.rsizex
         assert rtly >= 0 and rtly < cache_tile.rsizey
