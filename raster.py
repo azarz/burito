@@ -941,6 +941,9 @@ class BackendCachedRaster(BackendRaster):
             shutil.rmtree(cache_dir)
             os.makedirs(cache_dir, exist_ok=True)
 
+        if computation_tiles is None:
+            computation_tiles = cache_tiles
+
         # Array used to track the state of cahce tiles:
         # None: not yet met
         # False: met, has to be written
