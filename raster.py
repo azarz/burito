@@ -25,6 +25,7 @@ from buzzard import _tools
 import rtree.index
 from osgeo import gdal, osr
 from buzzard._tools import conv
+import names
 
 from burito.query import Query
 from burito.singleton_counter import SingletonCounter
@@ -32,7 +33,7 @@ from burito.checksum import checksum, checksum_file
 from burito.get_data_with_primitive import GetDataWithPrimitive
 
 
-threadPoolTaskCounter = SingletonCounter()
+thread_pool_task_counter = SingletonCounter()
 
 qryids = collections.defaultdict(lambda: f'{len(qryids):02d}')
 queids = collections.defaultdict(lambda: f'{len(queids):02d}')
@@ -47,6 +48,29 @@ def qrinfo(query):
         q = query.produced()
         return f'qr:{qryids[query]} in:{[qeinfo(q) for q in query.collected.values()]!s:6} out:{qeinfo(query.produced())}'
 
+
+
+name_dict = SingletonCounter()
+
+def get_uname():
+    def int_to_roman(input):
+        """ Convert an integer to a Roman numeral. """
+        ints = (1000, 900, 500, 400, 100, 90, 50, 40, 10, 9, 5, 4, 1)
+        nums = ('M', 'CM', 'D', 'CD', 'C', 'XC', 'L', 'XL', 'X', 'IX', 'V', 'IV', 'I')
+        result = []
+        for i, _ in enumerate(ints):
+            count = int(input / ints[i])
+            result.append(nums[i] * count)
+            input -= ints[i] * count
+        return ''.join(result)
+
+    name = names.get_first_name()
+    name_dict[name] += 1
+
+    if name_dict[name] == 1:
+        return name
+    else:
+        return name + ' ' + int_to_roman(name_dict[name])
 
 
 def is_tiling_valid(fp, tiles):
@@ -263,7 +287,8 @@ class Raster(object):
                 assert fp.same_grid(self.fp)
             q = queue.Queue(queue_size)
             query = Query(q, bands, is_flat)
-            to_produce = [(fp, "sleeping", str(uuid.uuid4())) for fp in fp_iterable]
+            # to_produce = [(fp, "sleeping", str(uuid.uuid4())) for fp in fp_iterable]
+            to_produce = [(fp, "sleeping", get_uname()) for fp in fp_iterable]
 
             query.to_produce += to_produce
 
@@ -419,7 +444,8 @@ class BackendRaster(object):
             return -1
         num = query.produced().qsize() + self._num_pending[id(query)]
         den = query.produced().maxsize
-        return num/den
+        # return num/den
+        return np.random.rand()
 
     @property
     def fp(self):
@@ -476,6 +502,8 @@ class BackendRaster(object):
 
 
     def _burn_data(self, produce_fp, produced_data, to_burn_fp, to_burn_data):
+        assert tuple(to_burn_fp.shape) == to_burn_data.shape[:2]
+        assert to_burn_fp.poly.within(produce_fp.poly)
         produced_data[to_burn_fp.slice_in(produce_fp)] = to_burn_data
 
 
@@ -495,7 +523,9 @@ class BackendRaster(object):
 
 
         while True:
-            time.sleep(0.05)
+            # time.sleep(0.05)
+            skip = False
+
             if self._stop_scheduler:
                 print("going to sleep")
                 return
@@ -532,6 +562,9 @@ class BackendRaster(object):
                 # b = datetime.datetime.now() - a
                 # print(self.h, qrinfo(query), f'new query with {len(query.to_produce)} to_produce, {len(query.to_collect)} to_collect')
 
+                skip = True
+                break
+
 
             # ordering queries accroding to their pressure
             assert len(set(map(id, self._queries))) == len(self._queries)
@@ -541,13 +574,16 @@ class BackendRaster(object):
 
             # getting the emptiest query
             for query in ordered_queries:
+                if skip:
+                    break
 
                 # If all to_produced was consumed: query ended
                 if not query.to_produce:
                     print(self.h, qrinfo(query), f'cleaning: treated all produce')
                     self._num_pending[id(query)] = 0
                     self._queries.remove(query)
-                    continue
+                    skip = True
+                    break
 
                 # If the query has been dropped
                 if query.produced() is None:
@@ -557,7 +593,8 @@ class BackendRaster(object):
                     self._graph.remove_edges_from(to_delete_edges)
                     self._graph.remove_node(id(query))
                     self._queries.remove(query)
-                    continue
+                    skip = True
+                    break
 
                 # if the emptiest query is full, waiting
                 if query.produced().full():
@@ -582,9 +619,15 @@ class BackendRaster(object):
 
                     self._num_pending[id(query)] += 1
 
+                    skip = True
+                    break
+
 
                 # iterating through the graph
                 for index, to_produce in enumerate(query.to_produce):
+                    if skip:
+                        break
+
                     if to_produce[1] == "sleeping":
                         continue
 
@@ -620,7 +663,7 @@ class BackendRaster(object):
                             if to_collect_fps_of_compute and query.to_collect[list(query.collected.keys())[0]][0] not in to_collect_fps_of_compute:
                                 continue
 
-                            if threadPoolTaskCounter[id(node["pool"])] < node["pool"]._processes:
+                            if thread_pool_task_counter[id(node["pool"])] < node["pool"]._processes:
                                 collected_data = []
                                 primitive_footprints = []
 
@@ -644,12 +687,13 @@ class BackendRaster(object):
                                         self
                                     )
                                 )
-                                threadPoolTaskCounter[id(self._computation_pool)] += 1
+                                thread_pool_task_counter[id(self._computation_pool)] += 1
 
                                 compute_out_edges = list(self._graph.out_edges(node))
                                 self._graph.remove_edges_from(compute_out_edges)
 
-                            continue
+                                skip = True
+                                break
 
                         # if the deepest is to_produce, updating produced
                         if index == 0 and node["type"] == "to_produce":
@@ -672,14 +716,15 @@ class BackendRaster(object):
 
                                 self._num_pending[id(query)] -= 1
 
-                            continue
+                                skip = True
+                                break
 
                         # skipping the ready to_produce that are not at index 0
                         if node["type"] == "to_produce":
                             continue
 
                         if node["type"] == "to_merge" and node["future"] is None:
-                            if threadPoolTaskCounter[id(node["pool"])] < node["pool"]._processes:
+                            if thread_pool_task_counter[id(node["pool"])] < node["pool"]._processes:
                                 node["future"] = node["pool"].apply_async(
                                     node["function"],
                                     (
@@ -688,13 +733,14 @@ class BackendRaster(object):
                                         node["in_data"]
                                     )
                                 )
-                                threadPoolTaskCounter[id(node["pool"])] += 1
-                            continue
+                                thread_pool_task_counter[id(node["pool"])] += 1
+                                skip = True
+                                break
 
                         in_edges = list(self._graph.in_edges(node_id))
 
                         if node["future"] is None:
-                            if threadPoolTaskCounter[id(node["pool"])] < node["pool"]._processes:
+                            if thread_pool_task_counter[id(node["pool"])] < node["pool"]._processes:
                                 if node["type"] == "to_read":
                                     node["future"] = node["pool"].apply_async(
                                         node["function"],
@@ -712,14 +758,15 @@ class BackendRaster(object):
                                             node["in_data"]
                                         )
                                     )
-                                threadPoolTaskCounter[id(node["pool"])] += 1
-                            continue
+                                thread_pool_task_counter[id(node["pool"])] += 1
+                                skip = True
+                                break
 
                         elif node["future"].ready():
                             in_data = node["future"].get()
                             if in_data is not None:
                                 in_data = in_data.astype(self._dtype).reshape(tuple(node["footprint"].shape) + (len(node["bands"]),))
-                            threadPoolTaskCounter[id(node["pool"])] -= 1
+                            thread_pool_task_counter[id(node["pool"])] -= 1
 
                             for in_edge in in_edges:
                                 if self._graph.nodes[in_edge[0]]["type"] == "to_produce":
@@ -738,13 +785,14 @@ class BackendRaster(object):
                                 else:
                                     self._graph.nodes[in_edge[0]]["in_data"] = in_data
                                 self._graph.remove_edge(*in_edge)
-                            continue
+                            skip = True
+                            break
 
-
-            if not self._queries:
-                time.sleep(1e-1)
-            else:
-                time.sleep(1e-2)
+            if not skip:
+                if not self._queries:
+                    time.sleep(1e-1)
+                else:
+                    time.sleep(5e-2)
 
 
     def _clean_graph(self):
@@ -817,7 +865,9 @@ class BackendRaster(object):
             if self._computation_tiles is not None:
                 to_merge = to_produce
 
-                to_merge_uid = str(uuid.uuid4())
+                # to_merge_uid = str(uuid.uuid4())
+                to_merge_uid = get_uname()
+
                 print(self.h, qrinfo(new_query), f'    {"to_merge":>15}', to_merge_uid)
                 if to_merge_uid in self._graph.nodes():
                     self._graph.nodes[to_merge_uid]["linked_to_produce"].add(to_produce_uid)
@@ -845,7 +895,10 @@ class BackendRaster(object):
 
             for to_compute in multi_to_compute:
                 # start = datetime.datetime.now()
-                to_compute_uid = str(uuid.uuid4())
+
+                # to_compute_uid = str(uuid.uuid4())
+                to_compute_uid = get_uname()
+
                 print(self.h, qrinfo(new_query), f'        {"to_compute":>15}', to_compute_uid)
 
                 if to_compute_uid in self._graph.nodes():
@@ -883,7 +936,10 @@ class BackendRaster(object):
 
                 for key in multi_to_collect:
                     new_query.to_collect[key].append(multi_to_collect[key])
-                    to_collect_uid = str(uuid.uuid4())
+
+                    # to_collect_uid = str(uuid.uuid4())
+                    to_collect_uid = get_uname()
+
                     print(self.h, qrinfo(new_query), f'            {"to_collect":>15}', to_collect_uid)
                     if to_collect_uid in self._graph.nodes():
                         self._graph.nodes[to_collect_uid]["linked_to_produce"].add(to_produce_uid)
@@ -898,7 +954,7 @@ class BackendRaster(object):
                             bands=new_query.bands
                         )
                     self._graph.add_edge(to_compute_uid, to_collect_uid)
-                
+
             # print(time_dict)
             # print(counter)
         new_query.collected = self._collect_data(new_query.to_collect)
@@ -1052,7 +1108,7 @@ class BackendCachedRaster(BackendRaster):
         """
         reads cache data
         """
-        print(self.h, "reading")
+        # print(self.h, "reading")
         filepath = self._get_cache_tile_path(cache_tile)[0]
 
         # Open a raster datasource
@@ -1097,7 +1153,7 @@ class BackendCachedRaster(BackendRaster):
         """
         writes cache data
         """
-        print(self.h, "writing ")
+        # print(self.h, "writing ")
         cs = checksum(data)
         filepath = self._get_cache_tile_path_prefix(cache_tile) + "_" + f'{cs:#010x}' + ".tif"
         sr = self.wkt_origin
@@ -1161,6 +1217,8 @@ class BackendCachedRaster(BackendRaster):
             gdalband.WriteArray(tilearray)
 
         gdal_ds.FlushCache()
+        del gdalband
+        del gdal_ds
 
         self._cache_checksum_array[np.where(self._cache_tiles == cache_tile)] = True
 
@@ -1202,7 +1260,8 @@ class BackendCachedRaster(BackendRaster):
             self._graph.add_edge(id(new_query), to_produce_uid)
 
             for to_read in to_read_tiles:
-                to_read_uid = str(uuid.uuid4())
+                # to_read_uid = str(uuid.uuid4())
+                to_read_uid = get_uname()
 
                 self._graph.add_node(
                     to_read_uid,
@@ -1289,7 +1348,8 @@ class BackendCachedRaster(BackendRaster):
                             if multi_to_collect[key] not in new_query.to_collect[key]:
                                 new_query.to_collect[key].append(multi_to_collect[key])
 
-                            to_collect_uid = str(uuid.uuid4())
+                            # to_collect_uid = str(uuid.uuid4())
+                            to_collect_uid = get_uname()
                             if to_collect_uid in self._graph.nodes():
                                 self._graph.nodes[to_collect_uid]["linked_to_produce"].add(to_produce_uid)
                             else:
