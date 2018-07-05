@@ -16,7 +16,7 @@ class Query(object):
 
         self.to_compute = []
 
-        self.to_discard = []
+        self.to_discard = {}
 
         self.bands = bands
 

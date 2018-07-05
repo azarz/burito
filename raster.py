@@ -623,6 +623,13 @@ class BackendRaster(object):
                     break
 
 
+                for primitive in query.collected:
+                    if not query.collected[primitive].empty() and query.to_collect[primitive][0] in query.to_discard[primitive]:
+                        query.collected[primitive].get(block=False)
+                        skip = True
+                        break
+
+
                 # iterating through the graph
                 for index, to_produce in enumerate(query.to_produce):
                     if skip:
@@ -680,6 +687,11 @@ class BackendRaster(object):
                                 )
                                 thread_pool_task_counter[id(self._computation_pool)] += 1
                                 query.to_compute.pop(0)
+                                node["linked_queries"].remove(query)
+
+                                for linked_query in node["linked_queries"]:
+                                    for collected_primitive in query.collected.keys():
+                                        linked_query.to_discard[collected_primitive].append(next(primitive_footprints))
 
                                 skip = True
                                 break
@@ -829,6 +841,7 @@ class BackendRaster(object):
 
         # initializing to_collect dictionnary
         new_query.to_collect = {key: [] for key in self._primitive_functions.keys()}
+        new_query.to_discard = {key: [] for key in self._primitive_functions.keys()}
 
         self._graph.add_node(
             id(new_query)
@@ -891,6 +904,8 @@ class BackendRaster(object):
 
                 if to_compute_uid in self._graph.nodes():
                     self._graph.nodes[to_compute_uid]["linked_to_produce"].add(to_produce_uid)
+                    self._graph.nodes[to_compute_uid]["linked_queries"].add(new_query)
+
                 else:
                     self._graph.add_node(
                         to_compute_uid,
@@ -901,6 +916,7 @@ class BackendRaster(object):
                         function=self._compute_data,
                         in_data=None,
                         linked_to_produce=set([to_produce_uid]),
+                        linked_queries=set([new_query]),
                         bands=new_query.bands
                     )
                     new_query.to_compute.append(to_compute)
@@ -1208,6 +1224,7 @@ class BackendCachedRaster(BackendRaster):
 
         # initializing to_collect dictionnary
         new_query.to_collect = {key: [] for key in self._primitive_functions.keys()}
+        new_query.to_discard = {key: [] for key in self._primitive_functions.keys()}
 
         self._graph.add_node(
             id(new_query)
@@ -1295,6 +1312,7 @@ class BackendCachedRaster(BackendRaster):
                         to_compute_uid = str(repr(to_compute) + "to_compute")
                         if to_compute_uid in self._graph.nodes():
                             self._graph.nodes[to_compute_uid]["linked_to_produce"].add(to_produce_uid)
+                            self._graph.nodes[to_compute_uid]["linked_queries"].add(new_query)
                         else:
                             self._graph.add_node(
                                 to_compute_uid,
@@ -1305,6 +1323,7 @@ class BackendCachedRaster(BackendRaster):
                                 function=self._compute_data,
                                 in_data=None,
                                 linked_to_produce=set([to_produce_uid]),
+                                linked_queries=set([new_query]),
                                 bands=new_query.bands
                             )
                             new_query.to_compute.append(to_compute)
