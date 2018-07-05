@@ -694,27 +694,23 @@ class BackendRaster(object):
 
                         # if the deepest is to_produce, updating produced
                         if index == 0 and node["type"] == "to_produce":
-                            not_ready_list = [future for future in node["futures"] if not future.ready()]
-                            if not not_ready_list:
+                            # If the query has not been dropped
+                            if query.produced() is not None:
+                                if node["is_flat"]:
+                                    node["in_data"] = node["in_data"].squeeze(axis=-1)
+                                query.produced().put(node["in_data"].astype(self._dtype), timeout=1e-2)
 
-                                # If the query has not been dropped
-                                if query.produced() is not None:
-                                    if node["is_flat"]:
-                                        node["data"] = node["data"].squeeze(axis=-1)
-                                    query.produced().put(node["data"].astype(self._dtype), timeout=1e-2)
+                            query.to_produce.pop(0)
 
+                            put_counter[query] += 1
+                            print(self.h, qrinfo(query), f'    put data for the {put_counter[query]:02d}th time, {len(query.to_produce):02d} left')
 
-                                query.to_produce.pop(0)
+                            self._graph.remove_node(node_id)
 
-                                put_counter[query] += 1
-                                print(self.h, qrinfo(query), f'    put data for the {put_counter[query]:02d}th time, {len(query.to_produce):02d} left')
+                            self._num_pending[id(query)] -= 1
 
-                                self._graph.remove_node(node_id)
-
-                                self._num_pending[id(query)] -= 1
-
-                                skip = True
-                                break
+                            skip = True
+                            break
 
                         # skipping the ready to_produce that are not at index 0
                         if node["type"] == "to_produce":
@@ -739,11 +735,17 @@ class BackendRaster(object):
                         if node["future"] is None:
                             if thread_pool_task_counter[id(node["pool"])] < node["pool"]._processes:
                                 if node["type"] == "to_read":
-                                    node["future"] = node["pool"].apply_async(
-                                        node["function"],
+                                    assert len(in_edges) == 1
+                                    in_edge = in_edges[0]
+                                    produce_node = self._graph.nodes[in_edge[0]]
+                                    if produce_node["in_data"] is None:
+                                        produce_node["in_data"] = np.zeros(tuple(produce_node["footprint"].shape) + (len(query.bands),))
+                                    node["future"] = self._io_pool.apply_async(
+                                        self._read_and_burn_data,
                                         (
-                                            node["cache_fp"],
-                                            node["produce_fp"],
+                                            produce_node["footprint"],
+                                            produce_node["in_data"],
+                                            node["footprint"],
                                             node["bands"]
                                         )
                                     )
@@ -767,21 +769,11 @@ class BackendRaster(object):
 
                             for in_edge in in_edges:
                                 in_node = self._graph.nodes[in_edge[0]]
-                                if in_node["type"] == "to_produce":
-                                    if in_node["data"] is None:
-                                        in_node["data"] = np.zeros(tuple(in_node["footprint"].shape) + (len(query.bands),))
-                                    in_node["futures"].append(self._io_pool.apply_async(
-                                        self._burn_data,
-                                        (
-                                            in_node["footprint"],
-                                            in_node["data"],
-                                            node["footprint"],
-                                            in_data
-                                        )
-                                    ))
-                                elif in_node["type"] == "to_merge":
+                                if in_node["type"] == "to_merge":
                                     in_node["in_data"].append(in_data)
                                     in_node["in_fp"].append(node["footprint"])
+                                elif in_node["type"] == "to_produce" and node["type"] != "to_compute":
+                                    pass
                                 else:
                                     in_node["in_data"] = in_data
                                 self._graph.remove_edge(*in_edge)
@@ -854,7 +846,7 @@ class BackendRaster(object):
                 to_produce_uid,
                 futures=[],
                 footprint=to_produce,
-                data=None,
+                in_data=None,
                 type="to_produce",
                 linked_to_produce=set([to_produce_uid]),
                 bands=new_query.bands,
@@ -1093,6 +1085,13 @@ class BackendCachedRaster(BackendRaster):
         return file_path
 
 
+    def _read_and_burn_data(self, produce_fp, produced_data, cache_fp, bands):
+        assert produce_fp.same_grid(cache_fp)
+        to_burn_data = self._read_cache_data(cache_fp, produce_fp, bands)
+        to_burn_fp = produce_fp.intersection(cache_fp)
+        self._burn_data(produce_fp, produced_data, to_burn_fp, to_burn_data)
+
+
     def _read_cache_data(self, cache_tile, produce_fp, bands):
         """
         reads cache data
@@ -1136,7 +1135,6 @@ class BackendCachedRaster(BackendRaster):
 
         assert np.array_equal(samplebands.shape[0:2], to_read_fp.shape)
         return samplebands
-
 
     def _write_cache_data(self, cache_tile, data):
         """
@@ -1236,9 +1234,8 @@ class BackendCachedRaster(BackendRaster):
                 to_produce_uid,
                 footprint=to_produce,
                 futures=[],
-                data=None,
-                type="to_produce",
                 in_data=None,
+                type="to_produce",
                 linked_to_produce=set([to_produce_uid]),
                 is_flat=new_query.is_flat,
                 bands=new_query.bands
@@ -1253,13 +1250,11 @@ class BackendCachedRaster(BackendRaster):
 
                 self._graph.add_node(
                     to_read_uid,
-                    footprint=to_produce.intersection(to_read),
-                    cache_fp=to_read,
+                    footprint=to_read,
                     future=None,
                     type="to_read",
                     pool=self._io_pool,
                     function=self._read_cache_data,
-                    produce_fp=to_produce,
                     linked_to_produce=set([to_produce_uid]),
                     bands=new_query.bands
                 )
