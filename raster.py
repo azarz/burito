@@ -444,8 +444,8 @@ class BackendRaster(object):
             return -1
         num = query.produced().qsize() + self._num_pending[id(query)]
         den = query.produced().maxsize
-        # return num/den
-        return np.random.rand()
+        return num/den
+        # return np.random.rand()
 
     @property
     def fp(self):
@@ -648,19 +648,14 @@ class BackendRaster(object):
                         if available_to_produce.isdisjoint(node["linked_to_produce"]):
                             continue
 
-                        # Skipping the collect
-                        if node["type"] == "to_collect":
-                            continue
-
                         # if deepest is to_compute, collecting (if possible) and computing
                         if node["type"] == "to_compute" and node["future"] is None:
                             # testing if at least 1 of the collected queues is empty (1 queue per primitive)
                             if any([query.collected[primitive].empty() for primitive in query.collected]):
                                 continue
 
-                            # asserting the available to collect are linked to the to compute
-                            to_collect_fps_of_compute = [self._graph.nodes[collect[1]]["footprint"] for collect in self._graph.out_edges(node_id)]
-                            if to_collect_fps_of_compute and query.to_collect[list(query.collected.keys())[0]][0] not in to_collect_fps_of_compute:
+                            # asserting it's the 1st to_compute
+                            if query.to_compute.index(node['footprint']) != 0:
                                 continue
 
                             if thread_pool_task_counter[id(node["pool"])] < node["pool"]._processes:
@@ -671,12 +666,8 @@ class BackendRaster(object):
                                 print(self.h, qrinfo(query), f'compute data for the {get_counter[query]:02d}th time node_id:({node_id})')
 
                                 for collected_primitive in query.collected.keys():
-
-
-
                                     collected_data.append(query.collected[collected_primitive].get(block=False))
                                     primitive_footprints.append(query.to_collect[collected_primitive].pop(0))
-
 
                                 node["future"] = self._computation_pool.apply_async(
                                     self._compute_data,
@@ -688,9 +679,7 @@ class BackendRaster(object):
                                     )
                                 )
                                 thread_pool_task_counter[id(self._computation_pool)] += 1
-
-                                compute_out_edges = list(self._graph.out_edges(node))
-                                self._graph.remove_edges_from(compute_out_edges)
+                                query.to_compute.pop(0)
 
                                 skip = True
                                 break
@@ -895,7 +884,6 @@ class BackendRaster(object):
 
             for to_compute in multi_to_compute:
                 # start = datetime.datetime.now()
-
                 # to_compute_uid = str(uuid.uuid4())
                 to_compute_uid = get_uname()
 
@@ -915,6 +903,7 @@ class BackendRaster(object):
                         linked_to_produce=set([to_produce_uid]),
                         bands=new_query.bands
                     )
+                    new_query.to_compute.append(to_compute)
                 if to_merge_uid is None:
                     self._graph.add_edge(to_produce_uid, to_compute_uid)
                 else:
@@ -936,24 +925,6 @@ class BackendRaster(object):
 
                 for key in multi_to_collect:
                     new_query.to_collect[key].append(multi_to_collect[key])
-
-                    # to_collect_uid = str(uuid.uuid4())
-                    to_collect_uid = get_uname()
-
-                    print(self.h, qrinfo(new_query), f'            {"to_collect":>15}', to_collect_uid)
-                    if to_collect_uid in self._graph.nodes():
-                        self._graph.nodes[to_collect_uid]["linked_to_produce"].add(to_produce_uid)
-                    else:
-                        self._graph.add_node(
-                            to_collect_uid,
-                            footprint=multi_to_collect[key],
-                            future=None,
-                            type="to_collect",
-                            primitive=key,
-                            linked_to_produce=set([to_produce_uid]),
-                            bands=new_query.bands
-                        )
-                    self._graph.add_edge(to_compute_uid, to_collect_uid)
 
             # print(time_dict)
             # print(counter)
@@ -1336,6 +1307,7 @@ class BackendCachedRaster(BackendRaster):
                                 linked_to_produce=set([to_produce_uid]),
                                 bands=new_query.bands
                             )
+                            new_query.to_compute.append(to_compute)
                         self._graph.add_edge(to_merge_uid, to_compute_uid)
 
                         if self._to_collect_of_to_compute is None:
@@ -1347,22 +1319,6 @@ class BackendCachedRaster(BackendRaster):
                         for key in multi_to_collect:
                             if multi_to_collect[key] not in new_query.to_collect[key]:
                                 new_query.to_collect[key].append(multi_to_collect[key])
-
-                            # to_collect_uid = str(uuid.uuid4())
-                            to_collect_uid = get_uname()
-                            if to_collect_uid in self._graph.nodes():
-                                self._graph.nodes[to_collect_uid]["linked_to_produce"].add(to_produce_uid)
-                            else:
-                                self._graph.add_node(
-                                    to_collect_uid,
-                                    footprint=multi_to_collect[key],
-                                    future=None,
-                                    type="to_collect",
-                                    primitive=key,
-                                    linked_to_produce=set([to_produce_uid]),
-                                    bands=new_query.bands
-                                )
-                            self._graph.add_edge(to_compute_uid, to_collect_uid)
 
         new_query.collected = self._collect_data(new_query.to_collect)
 

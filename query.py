@@ -14,6 +14,10 @@ class Query(object):
         self.to_collect = {}
         self.collected = {}
 
+        self.to_compute = []
+
+        self.to_discard = []
+
         self.bands = bands
 
         self.is_flat = is_flat
