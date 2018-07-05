@@ -542,15 +542,15 @@ class BackendRaster(object):
                 # if cached raster, checking the cache
                 if isinstance(self, BackendCachedRaster):
                     # launching the check process
-                    # if query.cache_checking is None:
-                        # query.cache_checking = self._io_pool.apply_async(self._check_query, (query,))
-                        self._check_query(query)
-                        # break
-                    #retrieving the results
-                    # elif not query.cache_checking.ready():
-                    #     break
-                    # else:
-                    #     query.cache_checking.get()
+                    if query.cache_checking is None:
+                        query.cache_checking = self._io_pool.apply_async(self._check_query, (query,))
+                        # self._check_query(query)
+                        break
+                    # retrieving the results
+                    elif not query.cache_checking.ready():
+                        break
+                    else:
+                        query.cache_checking.get()
 
                 query = self._new_queries.pop(0)
                 self._queries.append(query)
@@ -1336,8 +1336,7 @@ class BackendCachedRaster(BackendRaster):
                         assert multi_to_collect.keys() == self._primitive_functions.keys()
 
                         for key in multi_to_collect:
-                            if multi_to_collect[key] not in new_query.to_collect[key]:
-                                new_query.to_collect[key].append(multi_to_collect[key])
+                            new_query.to_collect[key].append(multi_to_collect[key])
 
         new_query.collected = self._collect_data(new_query.to_collect)
 
