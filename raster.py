@@ -537,30 +537,26 @@ class BackendRaster(object):
 
             # Consuming the new queries
             while self._new_queries:
-                # print(header, "updating graph ")
+                query = self._new_queries[0]
 
-                # a = datetime.datetime.now()
+                # if cached raster, checking the cache
+                if isinstance(self, BackendCachedRaster):
+                    # launching the check process
+                    # if query.cache_checking is None:
+                        # query.cache_checking = self._io_pool.apply_async(self._check_query, (query,))
+                        self._check_query(query)
+                        # break
+                    #retrieving the results
+                    # elif not query.cache_checking.ready():
+                    #     break
+                    # else:
+                    #     query.cache_checking.get()
+
                 query = self._new_queries.pop(0)
                 self._queries.append(query)
-
-                # print(dir(query))
-                # b = datetime.datetime.now() - a
-                # print(header, "popped, query size:", len(query.to_produce), b.total_seconds())
-                if isinstance(self, BackendCachedRaster):
-                    # print(header, "check array", self._cache_checksum_array.flatten())
-                    # a = datetime.datetime.now()
-                    # print(header, "checking ")
-                    self._check_query(query)
-                    # b = datetime.datetime.now() - a
-                    # print(header, "checked ", b.total_seconds())
-                    # print(header, "check array after check", self._cache_checksum_array.flatten())
-
-                # a = datetime.datetime.now()
                 self._update_graph_from_query(query)
 
                 print(self.h, qrinfo(query), f'new query with {len(query.to_produce)} to_produce, {list(len(p) for p in query.to_collect.values())} to_collect')
-                # b = datetime.datetime.now() - a
-                # print(self.h, qrinfo(query), f'new query with {len(query.to_produce)} to_produce, {len(query.to_collect)} to_collect')
 
                 skip = True
                 break
@@ -770,30 +766,33 @@ class BackendRaster(object):
                             thread_pool_task_counter[id(node["pool"])] -= 1
 
                             for in_edge in in_edges:
-                                if self._graph.nodes[in_edge[0]]["type"] == "to_produce":
-                                    self._graph.nodes[in_edge[0]]["futures"].append(self._io_pool.apply_async(
+                                in_node = self._graph.nodes[in_edge[0]]
+                                if in_node["type"] == "to_produce":
+                                    if in_node["data"] is None:
+                                        in_node["data"] = np.zeros(tuple(in_node["footprint"].shape) + (len(query.bands),))
+                                    in_node["futures"].append(self._io_pool.apply_async(
                                         self._burn_data,
                                         (
-                                            self._graph.nodes[in_edge[0]]["footprint"],
-                                            self._graph.nodes[in_edge[0]]["data"],
+                                            in_node["footprint"],
+                                            in_node["data"],
                                             node["footprint"],
                                             in_data
                                         )
                                     ))
-                                elif self._graph.nodes[in_edge[0]]["type"] == "to_merge":
-                                    self._graph.nodes[in_edge[0]]["in_data"].append(in_data)
-                                    self._graph.nodes[in_edge[0]]["in_fp"].append(node["footprint"])
+                                elif in_node["type"] == "to_merge":
+                                    in_node["in_data"].append(in_data)
+                                    in_node["in_fp"].append(node["footprint"])
                                 else:
-                                    self._graph.nodes[in_edge[0]]["in_data"] = in_data
+                                    in_node["in_data"] = in_data
                                 self._graph.remove_edge(*in_edge)
                             skip = True
                             break
 
             if not skip:
                 if not self._queries:
-                    time.sleep(1e-1)
+                    time.sleep(0.2)
                 else:
-                    time.sleep(5e-2)
+                    time.sleep(0.1)
 
 
     def _clean_graph(self):
@@ -855,7 +854,7 @@ class BackendRaster(object):
                 to_produce_uid,
                 futures=[],
                 footprint=to_produce,
-                data=np.zeros(tuple(to_produce.shape) + (len(new_query.bands),)),
+                data=None,
                 type="to_produce",
                 linked_to_produce=set([to_produce_uid]),
                 bands=new_query.bands,
@@ -990,6 +989,7 @@ class BackendCachedRaster(BackendRaster):
         # False: met, has to be written
         # True: met, already written and valid
         self._cache_checksum_array = np.empty(cache_tiles.shape, dtype=object)
+        self._check_lock = threading.Lock()
 
         self._cache_idx = rtree.index.Index()
         cache_fps = list(cache_tiles.flat)
@@ -1032,15 +1032,17 @@ class BackendCachedRaster(BackendRaster):
             indices.append(np.where(self._cache_tiles == intersecting_fp))
 
         for index in indices:
-            if self._cache_checksum_array[index][0] is not None:
-                indices.remove(index)
+            with self._check_lock:
+                if self._cache_checksum_array[index][0] is not None:
+                    indices.remove(index)
 
         return indices
 
 
     def _check_cache_fp(self, index):
         footprint = self._cache_tiles[index][0]
-        self._cache_checksum_array[index] = self._check_cache_file(footprint)
+        with self._check_lock:
+            self._cache_checksum_array[index] = self._check_cache_file(footprint)
 
     def _check_cache_file(self, footprint):
         cache_tile_path = self._get_cache_tile_path(footprint)
@@ -1059,7 +1061,7 @@ class BackendCachedRaster(BackendRaster):
         to_produce_fps = query.to_produce
         to_check = self._to_check_of_to_produce(to_produce_fps)
         self._io_pool.map(self._check_cache_fp, to_check)
-        # print(self.h, " query checked ", time.clock(), threading.currentThread().getName())
+        # print(self.h, " query checked ", threading.currentThread().getName())
 
 
 
@@ -1163,9 +1165,6 @@ class BackendCachedRaster(BackendRaster):
 
         # band_schema = None
 
-        gdal_ds.FlushCache()
-
-
         # Check array shape
         array = np.asarray(data)
         if array.shape[:2] != tuple(cache_tile.shape):
@@ -1207,7 +1206,8 @@ class BackendCachedRaster(BackendRaster):
         del gdalband
         del gdal_ds
 
-        self._cache_checksum_array[np.where(self._cache_tiles == cache_tile)] = True
+        with self._check_lock:
+            self._cache_checksum_array[np.where(self._cache_tiles == cache_tile)] = True
 
 
     def _update_graph_from_query(self, new_query):
@@ -1236,7 +1236,7 @@ class BackendCachedRaster(BackendRaster):
                 to_produce_uid,
                 footprint=to_produce,
                 futures=[],
-                data=np.zeros(tuple(to_produce.shape) + (len(new_query.bands),)),
+                data=None,
                 type="to_produce",
                 in_data=None,
                 linked_to_produce=set([to_produce_uid]),
