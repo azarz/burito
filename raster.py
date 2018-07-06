@@ -584,9 +584,7 @@ class BackendRaster(object):
                 # while there is space
                 while query.produced().qsize() + self._num_pending[id(query)] < query.produced().maxsize and query.to_produce[-1][1] == "sleeping":
                     # getting the first sleeping to_produce
-
                     first_sleeping_i = [to_produce[1] for to_produce in query.to_produce].index('sleeping')
-
                     to_produce_available = query.to_produce[first_sleeping_i][0]
 
                     # getting its id in the graph
@@ -599,16 +597,17 @@ class BackendRaster(object):
 
                     self._num_pending[id(query)] += 1
 
+                    assert query.produced().qsize() + self._num_pending[id(query)] <= query.produced().maxsize
+
                     skip = True
                     break
 
-
+                # getting the in_queue of data to discard
                 for primitive in query.collected:
                     if not query.collected[primitive].empty() and query.to_collect[primitive][0] in query.to_discard[primitive]:
                         query.collected[primitive].get(block=False)
                         skip = True
                         break
-
 
                 # iterating through the graph
                 for index, to_produce in enumerate(query.to_produce):
@@ -656,6 +655,8 @@ class BackendRaster(object):
                                     collected_data.append(query.collected[collected_primitive].get(block=False))
                                     primitive_footprints.append(query.to_collect[collected_primitive].pop(0))
 
+                                assert len(collected_data) == len(self._primitive_functions.keys())
+
                                 node["future"] = self._computation_pool.apply_async(
                                     self._compute_data,
                                     (
@@ -665,6 +666,7 @@ class BackendRaster(object):
                                         self
                                     )
                                 )
+
                                 thread_pool_task_counter[id(self._computation_pool)] += 1
                                 query.to_compute.pop(0)
                                 node["linked_queries"].remove(query)
@@ -690,7 +692,6 @@ class BackendRaster(object):
                             print(self.h, qrinfo(query), f'    put data for the {put_counter[query]:02d}th time, {len(query.to_produce):02d} left')
 
                             self._graph.remove_node(node_id)
-
                             self._num_pending[id(query)] -= 1
 
                             skip = True
@@ -701,8 +702,8 @@ class BackendRaster(object):
                             continue
 
                         if node["type"] == "to_merge" and node["future"] is None:
-                            if thread_pool_task_counter[id(node["pool"])] < node["pool"]._processes:
-                                node["future"] = node["pool"].apply_async(
+                            if thread_pool_task_counter[id(self._merge_pool)] < self._merge_pool._processes:
+                                node["future"] = self._merge_pool.apply_async(
                                     node["function"],
                                     (
                                         node["footprint"],
@@ -710,7 +711,8 @@ class BackendRaster(object):
                                         node["in_data"]
                                     )
                                 )
-                                thread_pool_task_counter[id(node["pool"])] += 1
+                                thread_pool_task_counter[id(self._merge_pool)] += 1
+                                assert thread_pool_task_counter[id(self._merge_pool)] <= self._merge_pool._processes
                                 skip = True
                                 break
 
@@ -833,7 +835,6 @@ class BackendRaster(object):
             )
 
             self._graph.add_edge(id(new_query), to_produce_uid)
-
             to_merge = to_produce
 
             # to_merge_uid = str(uuid.uuid4())
@@ -898,7 +899,8 @@ class BackendRaster(object):
                 # time_dict["compute3"] += (datetime.datetime.now() - start).total_seconds()
                 # start = datetime.datetime.now()
 
-                assert multi_to_collect.keys() == self._primitive_functions.keys()
+                if multi_to_collect.keys() != self._primitive_functions.keys():
+                    raise ValueError("to_collect keys do not match primitives")
 
                 for key in multi_to_collect:
                     new_query.to_collect[key].append(multi_to_collect[key])
@@ -993,6 +995,8 @@ class BackendCachedRaster(BackendRaster):
         for intersecting_fp in intersecting_fps:
             indices.append(np.where(self._cache_tiles == intersecting_fp))
 
+        assert len(indices) != 0
+
         for index in indices:
             with self._check_lock:
                 if self._cache_checksum_array[index][0] is not None:
@@ -1003,6 +1007,7 @@ class BackendCachedRaster(BackendRaster):
 
     def _check_cache_fp(self, index):
         footprint = self._cache_tiles[index][0]
+        assert isinstance(footprint, buzz.Footprint)
         with self._check_lock:
             self._cache_checksum_array[index] = self._check_cache_file(footprint)
 
@@ -1135,6 +1140,7 @@ class BackendCachedRaster(BackendRaster):
 
         # Check array shape
         array = np.asarray(data)
+
         if array.shape[:2] != tuple(cache_tile.shape):
             raise ValueError('Incompatible shape between array:%s and fp:%s' % (
                 array.shape, cache_tile.shape
@@ -1150,10 +1156,8 @@ class BackendCachedRaster(BackendRaster):
                 array.shape[-1], self.nbands
             )) # pragma: no cover
 
-
         # Normalize array dtype
         array = array.astype(self.dtype)
-
 
         if array.dtype == np.int8:
             array = array.astype('uint8')
