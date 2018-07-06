@@ -771,7 +771,7 @@ class BackendRaster(object):
                                 if in_node["type"] == "to_merge":
                                     in_node["in_data"].append(in_data)
                                     in_node["in_fp"].append(node["footprint"])
-                                elif in_node["type"] == "to_produce" and node["type"] != "to_compute":
+                                elif in_node["type"] == "to_produce" and node["type"] == "to_read":
                                     pass
                                 else:
                                     in_node["in_data"] = in_data
@@ -854,35 +854,32 @@ class BackendRaster(object):
 
             self._graph.add_edge(id(new_query), to_produce_uid)
 
+            to_merge = to_produce
+
+            # to_merge_uid = str(uuid.uuid4())
+            to_merge_uid = get_uname()
+
+            print(self.h, qrinfo(new_query), f'    {"to_merge":>15}', to_merge_uid)
+
+            self._graph.add_node(
+                to_merge_uid,
+                footprint=to_merge,
+                future=None,
+                futures=[],
+                type="to_merge",
+                pool=self._merge_pool,
+                function=self._merge_data,
+                in_data=[],
+                in_fp=[],
+                linked_to_produce=set([to_produce_uid]),
+                bands=new_query.bands
+            )
+            self._graph.add_edge(to_produce_uid, to_merge_uid)
+
             if self._computation_tiles is not None:
-                to_merge = to_produce
-
-                # to_merge_uid = str(uuid.uuid4())
-                to_merge_uid = get_uname()
-
-                print(self.h, qrinfo(new_query), f'    {"to_merge":>15}', to_merge_uid)
-                if to_merge_uid in self._graph.nodes():
-                    self._graph.nodes[to_merge_uid]["linked_to_produce"].add(to_produce_uid)
-                else:
-                    self._graph.add_node(
-                        to_merge_uid,
-                        footprint=to_merge,
-                        future=None,
-                        futures=[],
-                        type="to_merge",
-                        pool=self._merge_pool,
-                        function=self._merge_data,
-                        in_data=[],
-                        in_fp=[],
-                        linked_to_produce=set([to_produce_uid]),
-                        bands=new_query.bands
-                    )
-                self._graph.add_edge(to_produce_uid, to_merge_uid)
-
                 multi_to_compute = self._to_compute_of_to_produce(to_merge)
             else:
                 multi_to_compute = [to_produce]
-                to_merge_uid = None
             # time_dict["produce"] += (datetime.datetime.now() - start).total_seconds()
 
             for to_compute in multi_to_compute:
@@ -892,28 +889,21 @@ class BackendRaster(object):
 
                 print(self.h, qrinfo(new_query), f'        {"to_compute":>15}', to_compute_uid)
 
-                if to_compute_uid in self._graph.nodes():
-                    self._graph.nodes[to_compute_uid]["linked_to_produce"].add(to_produce_uid)
-                    self._graph.nodes[to_compute_uid]["linked_queries"].add(new_query)
+                self._graph.add_node(
+                    to_compute_uid,
+                    footprint=to_compute,
+                    future=None,
+                    type="to_compute",
+                    pool=self._computation_pool,
+                    function=self._compute_data,
+                    in_data=None,
+                    linked_to_produce=set([to_produce_uid]),
+                    linked_queries=set([new_query]),
+                    bands=new_query.bands
+                )
+                new_query.to_compute.append(to_compute)
 
-                else:
-                    self._graph.add_node(
-                        to_compute_uid,
-                        footprint=to_compute,
-                        future=None,
-                        type="to_compute",
-                        pool=self._computation_pool,
-                        function=self._compute_data,
-                        in_data=None,
-                        linked_to_produce=set([to_produce_uid]),
-                        linked_queries=set([new_query]),
-                        bands=new_query.bands
-                    )
-                    new_query.to_compute.append(to_compute)
-                if to_merge_uid is None:
-                    self._graph.add_edge(to_produce_uid, to_compute_uid)
-                else:
-                    self._graph.add_edge(to_merge_uid, to_compute_uid)
+                self._graph.add_edge(to_merge_uid, to_compute_uid)
 
                 if self._to_collect_of_to_compute is None:
                     continue
@@ -1321,17 +1311,18 @@ class BackendCachedRaster(BackendRaster):
                                 bands=new_query.bands
                             )
                             new_query.to_compute.append(to_compute)
+
+                            if self._to_collect_of_to_compute is not None:
+                                multi_to_collect = self._to_collect_of_to_compute(to_compute)
+
+                                if multi_to_collect.keys() != self._primitive_functions.keys():
+                                    raise ValueError("to_collect keys do not match primitives")
+
+                                for key in multi_to_collect:
+                                    # if multi_to_collect[key] not in new_query.to_collect[key]:
+                                    new_query.to_collect[key].append(multi_to_collect[key])
+
                         self._graph.add_edge(to_merge_uid, to_compute_uid)
-
-                        if self._to_collect_of_to_compute is None:
-                            continue
-                        multi_to_collect = self._to_collect_of_to_compute(to_compute)
-
-                        assert multi_to_collect.keys() == self._primitive_functions.keys()
-
-                        for key in multi_to_collect:
-                            if multi_to_collect[key] not in new_query.to_collect[key]:
-                                new_query.to_collect[key].append(multi_to_collect[key])
 
         new_query.collected = self._collect_data(new_query.to_collect)
 
