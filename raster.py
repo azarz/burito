@@ -530,7 +530,7 @@ class BackendRaster(object):
                 print("going to sleep")
                 return
 
-            self._clean_graph()
+            assert len(list(nx.isolates(self._graph))) == 0
 
             assert len(set(map(id, self._queries))) == len(self._queries)
             assert len(set(map(id, self._new_queries))) == len(self._new_queries)
@@ -584,9 +584,12 @@ class BackendRaster(object):
                 if query.produced() is None:
                     print(self.h, qrinfo(query), f'cleaning: dropped by main program')
                     self._num_pending[id(query)] = 0
-                    to_delete_edges = list(nx.dfs_edges(self._graph, source=id(query)))
-                    self._graph.remove_edges_from(to_delete_edges)
-                    self._graph.remove_node(id(query))
+                    to_delete_nodes = list(nx.dfs_postorder_nodes(self._graph, source=id(query)))
+                    for node_id in to_delete_nodes:
+                        node = self._graph.nodes[node_id]
+                        node["linked_queries"].remove(query)
+                        if not node["linked_queries"]:
+                            self._graph.remove_node(node_id)
                     self._queries.remove(query)
                     skip = True
                     break
@@ -776,6 +779,8 @@ class BackendRaster(object):
                                 else:
                                     in_node["in_data"] = in_data
                                 self._graph.remove_edge(*in_edge)
+
+                            self._graph.remove_node(node_id)
                             skip = True
                             break
 
@@ -784,15 +789,6 @@ class BackendRaster(object):
                     time.sleep(0.2)
                 else:
                     time.sleep(0.1)
-
-
-    def _clean_graph(self):
-        """
-        removes the graph's orphans
-        """
-        # Used to keep duplicates in to_produce
-        to_remove = list(nx.isolates(self._graph))
-        self._graph.remove_nodes_from(to_remove)
 
 
 
@@ -848,6 +844,7 @@ class BackendRaster(object):
                 in_data=None,
                 type="to_produce",
                 linked_to_produce=set([to_produce_uid]),
+                linked_queries=set([new_query]),
                 bands=new_query.bands,
                 is_flat=new_query.is_flat
             )
@@ -872,6 +869,7 @@ class BackendRaster(object):
                 in_data=[],
                 in_fp=[],
                 linked_to_produce=set([to_produce_uid]),
+                linked_queries=set([new_query]),
                 bands=new_query.bands
             )
             self._graph.add_edge(to_produce_uid, to_merge_uid)
@@ -1226,6 +1224,7 @@ class BackendCachedRaster(BackendRaster):
                 in_data=None,
                 type="to_produce",
                 linked_to_produce=set([to_produce_uid]),
+                linked_queries=set([new_query]),
                 is_flat=new_query.is_flat,
                 bands=new_query.bands
             )
@@ -1245,6 +1244,7 @@ class BackendCachedRaster(BackendRaster):
                     pool=self._io_pool,
                     function=self._read_cache_data,
                     linked_to_produce=set([to_produce_uid]),
+                    linked_queries=set([new_query]),
                     bands=new_query.bands
                 )
                 self._graph.add_edge(to_produce_uid, to_read_uid)
@@ -1256,6 +1256,7 @@ class BackendCachedRaster(BackendRaster):
                     to_write_uid = str(repr(to_write) + "to_write")
                     if to_write_uid in self._graph.nodes():
                         self._graph.nodes[to_write_uid]["linked_to_produce"].add(to_produce_uid)
+                        self._graph.nodes[to_write_uid]["linked_queries"].add(new_query)
                     else:
                         self._graph.add_node(
                             to_write_uid,
@@ -1266,6 +1267,7 @@ class BackendCachedRaster(BackendRaster):
                             function=self._write_cache_data,
                             in_data=None,
                             linked_to_produce=set([to_produce_uid]),
+                            linked_queries=set([new_query]),
                             bands=new_query.bands
                         )
                     self._graph.add_edge(to_read_uid, to_write_uid)
@@ -1274,6 +1276,7 @@ class BackendCachedRaster(BackendRaster):
                     to_merge_uid = str(repr(to_merge) + "to_merge")
                     if to_merge_uid in self._graph.nodes():
                         self._graph.nodes[to_merge_uid]["linked_to_produce"].add(to_produce_uid)
+                        self._graph.nodes[to_merge_uid]["linked_queries"].add(new_query)
                     else:
                         self._graph.add_node(
                             to_merge_uid,
@@ -1286,6 +1289,7 @@ class BackendCachedRaster(BackendRaster):
                             in_data=[],
                             in_fp=[],
                             linked_to_produce=set([to_produce_uid]),
+                            linked_queries=set([new_query]),
                             bands=new_query.bands
                         )
                     self._graph.add_edge(to_write_uid, to_merge_uid)
