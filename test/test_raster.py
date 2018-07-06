@@ -44,17 +44,17 @@ def test_complicated_raster_dependencies():
     def arange(fp, *args):
         return np.arange(fp.shape[0]*fp.shape[1]).reshape(fp.shape)
 
-    def summ(fp, *data):
+    def summ(fp, data, *args):
         summed = data[0] + data[1] + data[2]
         assert np.array_equal(summed.shape, fp.shape)
         return summed
 
-    def diff(fp, *data):
+    def diff(fp,  data, *args):
         diffed = data[0] - data[1] - data[2]
         assert np.array_equal(diffed.shape, fp.shape)
         return diffed
 
-    def product(fp, *data):
+    def product(fp, data, *args):
         producted = data[0] * data[1] * data[2]
         assert np.array_equal(producted.shape, fp.shape)
         return producted
@@ -131,3 +131,4 @@ def test_complicated_raster_dependencies():
 
 if __name__ == '__main__':
     test_simple_raster()
+    test_complicated_raster_dependencies()

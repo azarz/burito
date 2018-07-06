@@ -126,23 +126,6 @@ def is_tiling_valid(fp, tiles):
     return True
 
 
-def quick_share_area(fp, other):
-    idx = rtree.index.Index()
-
-    pxsizex = min(fp.pxsize[0], other.pxsize[0])
-    bound_inset = np.r_[
-        pxsizex / 4,
-        pxsizex / 4,
-        -pxsizex / 4,
-        -pxsizex / 4,
-    ]
-
-    idx.insert(0, fp.bounds + bound_inset)
-    idx.insert(1, other.bounds + bound_inset)
-
-    return False
-
-
 
 class Raster(object):
     def __init__(self,
@@ -167,7 +150,7 @@ class Raster(object):
         creates a raster from arguments
         """
         if footprint is None:
-            raise ValueError()
+            raise ValueError("footprint must be provided")
         if cached:
             assert cache_dir != None
             backend_raster = BackendCachedRaster(footprint,
@@ -186,7 +169,7 @@ class Raster(object):
                                                  computation_fps,
                                                  merge_pool,
                                                  merge_function
-                                 )
+                                                )
         else:
             backend_raster = BackendRaster(footprint,
                                            dtype,
@@ -201,7 +184,7 @@ class Raster(object):
                                            computation_fps,
                                            merge_pool,
                                            merge_function
-                           )
+                                          )
 
         self._backend = backend_raster
 
@@ -283,6 +266,8 @@ class Raster(object):
             bands, is_flat = _tools.normalize_band_parameter(band, len(self), None)
 
             fp_iterable = list(fp_iterable)
+            if not fp_iterable:
+                raise ValueError("cannot get empty list")
             for fp in fp_iterable:
                 assert fp.same_grid(self.fp)
             q = queue.Queue(queue_size)
@@ -349,7 +334,7 @@ class BackendRaster(object):
 
         self._full_fp = footprint
         if computation_function is None:
-            raise ValueError()
+            raise ValueError("computation function must be provided")
         self._compute_data = computation_function
         self._dtype = dtype
         self._num_bands = nbands
@@ -386,8 +371,8 @@ class BackendRaster(object):
             for key in primitives
         }
 
-        if primitives.keys():
-            assert to_collect_of_to_compute is not None
+        if primitives.keys() and to_collect_of_to_compute is None:
+            raise ValueError("must provide to_collect_of_to_compute when having primitives")
         self._to_collect_of_to_compute = to_collect_of_to_compute
 
         self._computation_tiles = computation_tiles
@@ -410,9 +395,6 @@ class BackendRaster(object):
             self._merge_data = default_merge_data
         else:
             self._merge_data = merge_function
-
-        # Used to track the number of pending tasks
-        self._num_pending = defaultdict(int)
 
         # Used to track the number of pending tasks
         self._num_pending = defaultdict(int)
@@ -521,7 +503,6 @@ class BackendRaster(object):
         put_counter = collections.Counter()
         get_counter = collections.Counter()
 
-
         while True:
             # time.sleep(0.05)
             skip = False
@@ -529,8 +510,6 @@ class BackendRaster(object):
             if self._stop_scheduler:
                 print("going to sleep")
                 return
-
-            assert len(list(nx.isolates(self._graph))) == 0
 
             assert len(set(map(id, self._queries))) == len(self._queries)
             assert len(set(map(id, self._new_queries))) == len(self._new_queries)
@@ -560,7 +539,6 @@ class BackendRaster(object):
                 skip = True
                 break
 
-
             # ordering queries accroding to their pressure
             assert len(set(map(id, self._queries))) == len(self._queries)
             assert len(set(map(id, self._new_queries))) == len(self._new_queries)
@@ -575,7 +553,8 @@ class BackendRaster(object):
                 # If all to_produced was consumed: query ended
                 if not query.to_produce:
                     print(self.h, qrinfo(query), f'cleaning: treated all produce')
-                    self._num_pending[id(query)] = 0
+                    del self._num_pending[id(query)]
+                    self._graph.remove_node(id(query))
                     self._queries.remove(query)
                     skip = True
                     break
@@ -583,7 +562,7 @@ class BackendRaster(object):
                 # If the query has been dropped
                 if query.produced() is None:
                     print(self.h, qrinfo(query), f'cleaning: dropped by main program')
-                    self._num_pending[id(query)] = 0
+                    del self._num_pending[id(query)]
                     to_delete_nodes = list(nx.dfs_postorder_nodes(self._graph, source=id(query)))
                     for node_id in to_delete_nodes:
                         node = self._graph.nodes[node_id]
@@ -593,6 +572,9 @@ class BackendRaster(object):
                     self._queries.remove(query)
                     skip = True
                     break
+
+                # checking if the graph was correctly cleaned
+                assert len(list(nx.isolates(self._graph))) == 0, list(nx.isolates(self._graph))
 
                 # if the emptiest query is full, waiting
                 if query.produced().full():
@@ -646,7 +628,7 @@ class BackendRaster(object):
                         node = self._graph.nodes[node_id]
 
                         # If there are out edges, not stopping (unless it is a compute node)
-                        if len(self._graph.out_edges(node_id)) > 0 and node["type"] != "to_compute":
+                        if len(self._graph.out_edges(node_id)) > 0:
                             continue
 
                         # Skipping the nodes not linked to available (pending) to_produce
@@ -830,7 +812,8 @@ class BackendRaster(object):
         new_query.to_discard = {key: [] for key in self._primitive_functions.keys()}
 
         self._graph.add_node(
-            id(new_query)
+            id(new_query),
+            linked_queries=set([new_query]),
         )
         # time_dict = defaultdict(float)
         # counter = defaultdict(int)
@@ -1212,7 +1195,8 @@ class BackendCachedRaster(BackendRaster):
         new_query.to_discard = {key: [] for key in self._primitive_functions.keys()}
 
         self._graph.add_node(
-            id(new_query)
+            id(new_query),
+            linked_queries=set([new_query]),
         )
 
         for to_produce, _, to_produce_uid in new_query.to_produce:
@@ -1323,7 +1307,6 @@ class BackendCachedRaster(BackendRaster):
                                     raise ValueError("to_collect keys do not match primitives")
 
                                 for key in multi_to_collect:
-                                    # if multi_to_collect[key] not in new_query.to_collect[key]:
                                     new_query.to_collect[key].append(multi_to_collect[key])
 
                         self._graph.add_edge(to_merge_uid, to_compute_uid)
