@@ -119,11 +119,12 @@ def test_complicated_raster_dependencies():
     summ_array = summ_raster.get_data(footprint)
     diff_array = diff_raster.get_data(footprint)
     prod_array = product_raster.get_data(footprint)
+    prod2 = product.get_data(footprint)
 
     assert summ_array[0, 1] == 4
     assert diff_array[0, 1] == -2
     assert prod_array[0, 1] == 2
-
+    assert np.array_equal(prod_array, prod2)
 
 
 

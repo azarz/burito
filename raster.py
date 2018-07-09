@@ -562,7 +562,8 @@ class BackendRaster(object):
                 # If the query has been dropped
                 if query.produced() is None:
                     print(self.h, qrinfo(query), f'cleaning: dropped by main program')
-                    del self._num_pending[id(query)]
+                    if self._num_pending[id(query)]: # could be false because dropped too early
+                        del self._num_pending[id(query)]
                     to_delete_nodes = list(nx.dfs_postorder_nodes(self._graph, source=id(query)))
                     for node_id in to_delete_nodes:
                         node = self._graph.nodes[node_id]
