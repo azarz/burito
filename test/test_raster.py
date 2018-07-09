@@ -131,8 +131,7 @@ def test_complicated_raster_dependencies():
     assert np.array_equal(prod_array, prod2)
 
 
-
-
+def test_simple_cached():
 
 if __name__ == '__main__':
     test_simple_raster()

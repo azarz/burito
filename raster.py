@@ -634,9 +634,14 @@ class BackendRaster(object):
                     first_node_id = to_produce[2]
 
                     # going as deep as possible
-                    depth_node_ids = nx.dfs_postorder_nodes(self._graph.copy(), source=first_node_id)
+                    depth_node_ids = iter(nx.dfs_postorder_nodes(self._graph, source=first_node_id))
 
-                    for node_id in depth_node_ids:
+                    while True:
+                        try:
+                            node_id = next(depth_node_ids)
+                        except StopIteration:
+                            break
+
                         node = self._graph.nodes[node_id]
 
                         # If there are out edges, not stopping (unless it is a compute node)
@@ -1168,6 +1173,12 @@ class BackendCachedRaster(BackendRaster):
             gdal_ds.SetProjection(osr.GetUserInputAsWKT(sr))
         gdal_ds.SetGeoTransform(cache_tile.gt)
 
+
+        if self.nodata is not None:
+            for i in range(self.nbands):
+                gdal_ds.GetRasterBand(i + 1).SetNoDataValue(self.nodata)
+
+         # band_schema = None
         # band_schema = None
 
         # Check array shape
@@ -1235,7 +1246,7 @@ class BackendCachedRaster(BackendRaster):
         )
 
         for to_produce, _, to_produce_uid in new_query.to_produce:
-
+            print(self.h, qrinfo(new_query), f'{"to_produce":>15}', to_produce_uid)
             self._graph.add_node(
                 to_produce_uid,
                 footprint=to_produce,
@@ -1254,6 +1265,7 @@ class BackendCachedRaster(BackendRaster):
             for to_read in to_read_tiles:
                 # to_read_uid = str(uuid.uuid4())
                 to_read_uid = get_uname()
+                print(self.h, qrinfo(new_query), f'{"to_read":>15}', to_read_uid)
 
                 self._graph.add_node(
                     to_read_uid,
@@ -1273,6 +1285,7 @@ class BackendCachedRaster(BackendRaster):
                     to_write = to_read
 
                     to_write_uid = str(repr(to_write) + "to_write")
+                    print(self.h, qrinfo(new_query), f'{"to_write":>15}', to_write_uid)
                     if to_write_uid in self._graph.nodes():
                         self._graph.nodes[to_write_uid]["linked_to_produce"].add(to_produce_uid)
                         self._graph.nodes[to_write_uid]["linked_queries"].add(new_query)
@@ -1293,6 +1306,7 @@ class BackendCachedRaster(BackendRaster):
 
                     to_merge = to_write
                     to_merge_uid = str(repr(to_merge) + "to_merge")
+                    print(self.h, qrinfo(new_query), f'{"to_merge":>15}', to_merge_uid)
                     if to_merge_uid in self._graph.nodes():
                         self._graph.nodes[to_merge_uid]["linked_to_produce"].add(to_produce_uid)
                         self._graph.nodes[to_merge_uid]["linked_queries"].add(new_query)
@@ -1317,6 +1331,7 @@ class BackendCachedRaster(BackendRaster):
 
                     for to_compute in to_compute_multi:
                         to_compute_uid = str(repr(to_compute) + "to_compute")
+                        print(self.h, qrinfo(new_query), f'{"to_compute":>15}', to_compute_uid)
                         if to_compute_uid in self._graph.nodes():
                             self._graph.nodes[to_compute_uid]["linked_to_produce"].add(to_produce_uid)
                             self._graph.nodes[to_compute_uid]["linked_queries"].add(new_query)
