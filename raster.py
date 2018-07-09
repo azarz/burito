@@ -1037,16 +1037,18 @@ class BackendCachedRaster(BackendRaster):
         self._cache_checksum_array[index] = self._check_cache_file(footprint)
 
     def _check_cache_file(self, footprint):
-        cache_tile_path = self._get_cache_tile_path(footprint)
-        if not cache_tile_path:
-            return False
-        else:
-            cache_path = cache_tile_path[0]
-            checksum_dot_tif = cache_path.split('_')[-1]
-            file_checksum = checksum_dot_tif.split('.')[0]
-            if int(file_checksum, base=16) == checksum_file(cache_path):
-                return True
-        return False
+        cache_tile_paths = self._get_cache_tile_path(footprint)
+        result = False
+        if cache_tile_paths:
+            for cache_path in cache_tile_paths:
+                checksum_dot_tif = cache_path.split('_')[-1]
+                file_checksum = checksum_dot_tif.split('.')[0]
+                if int(file_checksum, base=16) == checksum_file(cache_path):
+                    result = True
+                else:
+                    os.remove(cache_path)
+
+        return result
 
     def _check_query(self, query):
         # print(self.h, " checking query ", threading.currentThread().getName())
@@ -1099,11 +1101,8 @@ class BackendCachedRaster(BackendRaster):
 
         filepaths = self._get_cache_tile_path(cache_tile)
 
-        if len(filepaths) == 1:
-            filepath = filepaths[0]
-        else:
-            print("lolnope")
-            exit()
+        assert len(filepaths) == 1
+        filepath = filepaths[0]
 
         # Open a raster datasource
         options = ()
@@ -1141,6 +1140,8 @@ class BackendCachedRaster(BackendRaster):
 
         assert np.array_equal(samplebands.shape[0:2], to_read_fp.shape)
         return samplebands
+
+
 
     def _write_cache_data(self, cache_tile, data):
         """
