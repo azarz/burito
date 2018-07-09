@@ -15,6 +15,8 @@ def test_simple_raster():
     io_pool = mp.pool.ThreadPool(1)
     footprint = buzz.Footprint(tl=(0, 0), size=(10, 10), rsize=(10, 10))
 
+    hej = []
+
     def compute_data(fp, *args):
         return np.zeros(fp.shape)
 
@@ -22,12 +24,14 @@ def test_simple_raster():
         footprint=footprint,
         computation_function=compute_data,
         computation_pool=computation_pool,
-        io_pool=io_pool
+        io_pool=io_pool,
+        debug_callback=hej
     )
 
     array = simple_raster.get_data(footprint)
 
     assert np.all(array == 0)
+    print(hej)
 
 
 def test_complicated_raster_dependencies():
@@ -44,17 +48,17 @@ def test_complicated_raster_dependencies():
     def arange(fp, *args):
         return np.arange(fp.shape[0]*fp.shape[1]).reshape(fp.shape)
 
-    def summ(fp, *data):
+    def summ(fp, data, *args):
         summed = data[0] + data[1] + data[2]
         assert np.array_equal(summed.shape, fp.shape)
         return summed
 
-    def diff(fp, *data):
+    def diff(fp,  data, *args):
         diffed = data[0] - data[1] - data[2]
         assert np.array_equal(diffed.shape, fp.shape)
         return diffed
 
-    def product(fp, *data):
+    def product(fp, data, *args):
         producted = data[0] * data[1] * data[2]
         assert np.array_equal(producted.shape, fp.shape)
         return producted
@@ -119,11 +123,12 @@ def test_complicated_raster_dependencies():
     summ_array = summ_raster.get_data(footprint)
     diff_array = diff_raster.get_data(footprint)
     prod_array = product_raster.get_data(footprint)
+    prod2 = product.get_data(footprint)
 
     assert summ_array[0, 1] == 4
     assert diff_array[0, 1] == -2
     assert prod_array[0, 1] == 2
-
+    assert np.array_equal(prod_array, prod2)
 
 
 
@@ -131,3 +136,4 @@ def test_complicated_raster_dependencies():
 
 if __name__ == '__main__':
     test_simple_raster()
+    # test_complicated_raster_dependencies()

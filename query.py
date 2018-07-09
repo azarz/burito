@@ -14,6 +14,13 @@ class Query(object):
         self.to_collect = {}
         self.collected = {}
 
+        self.to_compute = []
+
+        self.to_discard = {}
+
         self.bands = bands
+
+        # Use to do the raster checking of cache file asynchonously (holds an AsyncResult)
+        self.cache_checking = None
 
         self.is_flat = is_flat
