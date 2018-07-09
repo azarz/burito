@@ -577,8 +577,12 @@ class BackendRaster(object):
                     skip = True
                     break
 
+                isolates_not_query = [
+                    node_id for node_id in list(nx.isolates(self._graph))
+                    if node_id not in list(map(id, self._queries))
+                ]
                 # checking if the graph was correctly cleaned
-                assert len(list(nx.isolates(self._graph))) == 0, list(nx.isolates(self._graph))
+                assert len(isolates_not_query) == 0, isolates_not_query
 
                 # if the emptiest query is full, waiting
                 if query.produced().full():
@@ -835,9 +839,6 @@ class BackendRaster(object):
         # }
         # with p # of primitives and n # of to_compute fps
 
-        if len(new_query.to_produce) == 0:
-            return
-
         # initializing to_collect dictionnary
         new_query.to_collect = {key: [] for key in self._primitive_functions.keys()}
         new_query.to_discard = {key: [] for key in self._primitive_functions.keys()}
@@ -968,6 +969,11 @@ class BackendCachedRaster(BackendRaster):
         self._cache_dir = cache_dir
         self._cache_tiles = cache_tiles
 
+        self._indices_of_cache_tiles = {
+            self._cache_tiles[index]: index
+            for index in np.ndindex(*self._cache_tiles.shape)
+        }
+
         assert is_tiling_valid(footprint, cache_tiles.flat)
 
         if cache_dir is not None:
@@ -984,7 +990,6 @@ class BackendCachedRaster(BackendRaster):
         # False: met, has to be written
         # True: met, already written and valid
         self._cache_checksum_array = np.empty(cache_tiles.shape, dtype=object)
-        self._check_lock = threading.Lock()
 
         self._cache_idx = rtree.index.Index()
         cache_fps = list(cache_tiles.flat)
@@ -1015,31 +1020,21 @@ class BackendCachedRaster(BackendRaster):
 
 
 
-
-
     def _to_check_of_to_produce(self, to_produce_fps):
-        intersecting_fps = []
+        unique_to_read_fps = set()
         for to_produce in to_produce_fps:
-            intersecting_fps += self._to_read_of_to_produce(to_produce[0])
-        intersecting_fps = set(intersecting_fps)
+            unique_to_read_fps |= set(self._to_read_of_to_produce(to_produce[0]))
 
-        indices = []
-        for intersecting_fp in intersecting_fps:
-            indices.append(np.where(self._cache_tiles == intersecting_fp))
-
-        for index in indices:
-            with self._check_lock:
-                if self._cache_checksum_array[index][0] is not None:
-                    indices.remove(index)
-
-        return indices
+        for fp_to_read in unique_to_read_fps:
+            index = self._indices_of_cache_tiles[fp_to_read]
+            if self._cache_checksum_array[index] is None:
+                yield index
 
 
     def _check_cache_fp(self, index):
-        footprint = self._cache_tiles[index][0]
+        footprint = self._cache_tiles[index]
         assert isinstance(footprint, buzz.Footprint)
-        with self._check_lock:
-            self._cache_checksum_array[index] = self._check_cache_file(footprint)
+        self._cache_checksum_array[index] = self._check_cache_file(footprint)
 
     def _check_cache_file(self, footprint):
         cache_tile_path = self._get_cache_tile_path(footprint)
@@ -1056,8 +1051,8 @@ class BackendCachedRaster(BackendRaster):
     def _check_query(self, query):
         # print(self.h, " checking query ", threading.currentThread().getName())
         to_produce_fps = query.to_produce
-        to_check = self._to_check_of_to_produce(to_produce_fps)
-        self._io_pool.map(self._check_cache_fp, to_check)
+        to_check = list(self._to_check_of_to_produce(to_produce_fps))
+        map(self._check_cache_fp, to_check)
         # print(self.h, " query checked ", threading.currentThread().getName())
 
 
@@ -1066,15 +1061,15 @@ class BackendCachedRaster(BackendRaster):
         """
         Returns a string, which is a path to a cache tile from its fp
         """
-        tile_index = np.where(self._cache_tiles == cache_tile)
+        tile_index = self._indices_of_cache_tiles(cache_tile)
         path = str(
             Path(self._cache_dir) /
             "fullsize_{:05d}_{:05d}_tilesize_{:05d}_{:05d}_tilepxindex_{:05d}_{:05d}_tileindex_{:05d}_{:05d}".format(
                 *self._full_fp.rsize,
                 *cache_tile.rsize,
                 *self._full_fp.spatial_to_raster(cache_tile.tl),
-                tile_index[0][0],
-                tile_index[1][0]
+                tile_index[0],
+                tile_index[1]
             )
         )
         return path
@@ -1085,9 +1080,8 @@ class BackendCachedRaster(BackendRaster):
         Returns a string, which is a path to a cache tile from its fp
         """
         prefix = self._get_cache_tile_path_prefix(cache_tile)
-        file_path = glob.glob(prefix + "_0x*.tif")
-        assert len(file_path) <= 1, file_path
-        return file_path
+        files_paths = glob.glob(prefix + "_0x*.tif")
+        return files_paths
 
 
     def _read_and_burn_data(self, produce_fp, produced_data, cache_fp, bands):
@@ -1102,7 +1096,14 @@ class BackendCachedRaster(BackendRaster):
         reads cache data
         """
         # print(self.h, "reading")
-        filepath = self._get_cache_tile_path(cache_tile)[0]
+
+        filepaths = self._get_cache_tile_path(cache_tile)
+
+        if len(filepaths) == 1:
+            filepath = filepaths[0]
+        else:
+            print("lolnope")
+            exit()
 
         # Open a raster datasource
         options = ()
@@ -1208,8 +1209,7 @@ class BackendCachedRaster(BackendRaster):
         del gdalband
         del gdal_ds
 
-        with self._check_lock:
-            self._cache_checksum_array[np.where(self._cache_tiles == cache_tile)] = True
+        self._cache_checksum_array[self._indices_of_cache_tiles(cache_tile)] = True
 
 
     def _update_graph_from_query(self, new_query):
@@ -1223,9 +1223,6 @@ class BackendCachedRaster(BackendRaster):
         #    [to_collect_pp_1, ..., to_collect_pp_n]
         # ]
         # with p # of primitives and n # of to_compute fps
-
-        if len(new_query.to_produce) == 0:
-            return
 
         # initializing to_collect dictionnary
         new_query.to_collect = {key: [] for key in self._primitive_functions.keys()}
@@ -1356,7 +1353,7 @@ class BackendCachedRaster(BackendRaster):
         return [list(self._cache_tiles.flat)[i] for i in to_read_list]
 
     def _is_written(self, cache_fp):
-        return self._cache_checksum_array[np.where(self._cache_tiles == cache_fp)]
+        return self._cache_checksum_array[self._indices_of_cache_tiles(cache_fp)]
 
     def _to_compute_of_to_write(self, fp):
         to_compute_list = self._computation_idx.intersection(fp.bounds)
