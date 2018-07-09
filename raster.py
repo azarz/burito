@@ -11,7 +11,6 @@ import time
 import datetime
 from collections import defaultdict
 import glob
-import shutil
 import sys
 import queue
 import itertools
@@ -269,8 +268,7 @@ class Raster(object):
             bands, is_flat = _tools.normalize_band_parameter(band, len(self), None)
 
             fp_iterable = list(fp_iterable)
-            if not fp_iterable:
-                raise ValueError("cannot get empty list")
+            print('_get_multi_data_queue', fp_iterable, id(self))
             for fp in fp_iterable:
                 assert fp.same_grid(self.fp)
             q = queue.Queue(queue_size)
@@ -527,14 +525,7 @@ class BackendRaster(object):
                 # if cached raster, checking the cache
                 if isinstance(self, BackendCachedRaster):
                     # launching the check process
-                    if query.cache_checking is None:
-                        query.cache_checking = self._io_pool.apply_async(self._check_query, (query,))
-                        break
-                    # retrieving the results
-                    elif not query.cache_checking.ready():
-                        break
-                    else:
-                        query.cache_checking.get()
+                    self._check_query(query)
 
                 query = self._new_queries.pop(0)
                 self._queries.append(query)
@@ -588,7 +579,7 @@ class BackendRaster(object):
                     break
 
                 # checking if the graph was correctly cleaned
-                assert len(list(nx.isolates(self._graph))) == 0, list(nx.isolates(self._graph))
+                # assert len(list(nx.isolates(self._graph))) == 0, list(nx.isolates(self._graph))
 
                 # if the emptiest query is full, waiting
                 if query.produced().full():
@@ -691,8 +682,11 @@ class BackendRaster(object):
                                 node["linked_queries"].remove(query)
 
                                 for linked_query in node["linked_queries"]:
-                                    for collected_primitive in query.collected.keys():
-                                        linked_query.to_discard[collected_primitive].append(next(primitive_footprints))
+                                    for collected_primitive, primitive_footprint in zip(query.collected.keys(), primitive_footprints):
+                                        linked_query.to_discard[collected_primitive].append(primitive_footprint)
+
+                                    # for collected_primitive in query.collected.keys():
+                                    #     linked_query.to_discard[collected_primitive].append(next(primitive_footprints))
 
                                 if self._debug_callback is not None:
                                     self._debug_callback.append("started to compute data")
@@ -977,9 +971,11 @@ class BackendCachedRaster(BackendRaster):
 
         assert is_tiling_valid(footprint, cache_tiles.flat)
 
-        if overwrite:
-            shutil.rmtree(cache_dir)
+        if cache_dir is not None:
             os.makedirs(cache_dir, exist_ok=True)
+            if overwrite:
+                for path in glob.glob(cache_dir + "/*_0x*.tif"):
+                    os.remove(path)
 
         if computation_tiles is None:
             computation_tiles = cache_tiles
@@ -1032,7 +1028,7 @@ class BackendCachedRaster(BackendRaster):
         for intersecting_fp in intersecting_fps:
             indices.append(np.where(self._cache_tiles == intersecting_fp))
 
-        assert len(indices) != 0
+        # assert len(indices) != 0, self.h
 
         for index in indices:
             with self._check_lock:

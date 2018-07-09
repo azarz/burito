@@ -40,18 +40,26 @@ def main():
     scales = [0.16, 0.32]
     # scales = [0.16, 0.32, 0.64, 1.28]
 
+    caches_dir = '/media/ngoguey/4b16cd43-a81f-4aef-b59e-6de3120df13b/buzz-caching/'
+
+    # overwrite = False
+    overwrite = True
 
     dsms = collections.OrderedDict()
     r = dsm
     for scale in scales:
-        rr = derive_raster(r, fp=r.fp.intersection(r.fp, scale=scale, alignment=(0, 0)))
+        d = os.path.join(caches_dir, f'dsm{scale*100:.0f}')
+        # d = None
+        rr = derive_raster(r, fp=r.fp.intersection(r.fp, scale=scale, alignment=(0, 0)), cache_dir=d, overwrite=overwrite)
         dsms[scale] = rr
         r = rr
 
     orthos = collections.OrderedDict()
     r = ortho
     for scale in scales:
-        rr = derive_raster(r, fp=r.fp.intersection(r.fp, scale=scale, alignment=(0, 0)))
+        d = os.path.join(caches_dir, f'ortho{scale*100:.0f}')
+        # d = None
+        rr = derive_raster(r, fp=r.fp.intersection(r.fp, scale=scale, alignment=(0, 0)), cache_dir=d, overwrite=overwrite)
         orthos[scale] = rr
         r = rr
 
