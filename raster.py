@@ -1061,7 +1061,7 @@ class BackendCachedRaster(BackendRaster):
         """
         Returns a string, which is a path to a cache tile from its fp
         """
-        tile_index = self._indices_of_cache_tiles(cache_tile)
+        tile_index = self._indices_of_cache_tiles[cache_tile]
         path = str(
             Path(self._cache_dir) /
             "fullsize_{:05d}_{:05d}_tilesize_{:05d}_{:05d}_tilepxindex_{:05d}_{:05d}_tileindex_{:05d}_{:05d}".format(
@@ -1209,7 +1209,7 @@ class BackendCachedRaster(BackendRaster):
         del gdalband
         del gdal_ds
 
-        self._cache_checksum_array[self._indices_of_cache_tiles(cache_tile)] = True
+        self._cache_checksum_array[self._indices_of_cache_tiles[cache_tile]] = True
 
 
     def _update_graph_from_query(self, new_query):
@@ -1353,7 +1353,7 @@ class BackendCachedRaster(BackendRaster):
         return [list(self._cache_tiles.flat)[i] for i in to_read_list]
 
     def _is_written(self, cache_fp):
-        return self._cache_checksum_array[self._indices_of_cache_tiles(cache_fp)]
+        return self._cache_checksum_array[self._indices_of_cache_tiles[cache_fp]]
 
     def _to_compute_of_to_write(self, fp):
         to_compute_list = self._computation_idx.intersection(fp.bounds)
