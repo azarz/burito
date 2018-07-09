@@ -1054,7 +1054,7 @@ class BackendCachedRaster(BackendRaster):
         # print(self.h, " checking query ", threading.currentThread().getName())
         to_produce_fps = query.to_produce
         to_check = list(self._to_check_of_to_produce(to_produce_fps))
-        map(self._check_cache_fp, to_check)
+        list(map(self._check_cache_fp, to_check))
         # print(self.h, " query checked ", threading.currentThread().getName())
 
 
