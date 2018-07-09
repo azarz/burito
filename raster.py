@@ -690,9 +690,11 @@ class BackendRaster(object):
                                 query.to_compute.pop(0)
                                 node["linked_queries"].remove(query)
 
+                                i = 0
                                 for linked_query in node["linked_queries"]:
                                     for collected_primitive in query.collected.keys():
-                                        linked_query.to_discard[collected_primitive].append(next(primitive_footprints))
+                                        linked_query.to_discard[collected_primitive].append(primitive_footprints[i])
+                                        i += 1
 
                                 if self._debug_callback is not None:
                                     self._debug_callback.append("started to compute data")
