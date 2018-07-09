@@ -15,6 +15,8 @@ def test_simple_raster():
     io_pool = mp.pool.ThreadPool(1)
     footprint = buzz.Footprint(tl=(0, 0), size=(10, 10), rsize=(10, 10))
 
+    hej = []
+
     def compute_data(fp, *args):
         return np.zeros(fp.shape)
 
@@ -22,12 +24,14 @@ def test_simple_raster():
         footprint=footprint,
         computation_function=compute_data,
         computation_pool=computation_pool,
-        io_pool=io_pool
+        io_pool=io_pool,
+        debug_callback=hej
     )
 
     array = simple_raster.get_data(footprint)
 
     assert np.all(array == 0)
+    print(hej)
 
 
 def test_complicated_raster_dependencies():
@@ -132,4 +136,4 @@ def test_complicated_raster_dependencies():
 
 if __name__ == '__main__':
     test_simple_raster()
-    test_complicated_raster_dependencies()
+    # test_complicated_raster_dependencies()

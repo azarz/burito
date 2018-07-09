@@ -145,7 +145,8 @@ class Raster(object):
                  to_collect_of_to_compute=None,
                  computation_fps=None,
                  merge_pool=None,
-                 merge_function=None):
+                 merge_function=None,
+                 debug_callback=None):
         """
         creates a raster from arguments
         """
@@ -168,7 +169,8 @@ class Raster(object):
                                                  to_collect_of_to_compute,
                                                  computation_fps,
                                                  merge_pool,
-                                                 merge_function
+                                                 merge_function,
+                                                 debug_callback
                                                 )
         else:
             backend_raster = BackendRaster(footprint,
@@ -183,7 +185,8 @@ class Raster(object):
                                            to_collect_of_to_compute,
                                            computation_fps,
                                            merge_pool,
-                                           merge_function
+                                           merge_function,
+                                           debug_callback
                                           )
 
         self._backend = backend_raster
@@ -330,7 +333,10 @@ class BackendRaster(object):
                  to_collect_of_to_compute,
                  computation_tiles,
                  merge_pool,
-                 merge_function):
+                 merge_function,
+                 debug_callback):
+
+        self._debug_callback = debug_callback
 
         self._full_fp = footprint
         if computation_function is None:
@@ -535,7 +541,8 @@ class BackendRaster(object):
                 self._update_graph_from_query(query)
 
                 print(self.h, qrinfo(query), f'new query with {len(query.to_produce)} to_produce, {list(len(p) for p in query.to_collect.values())} to_collect')
-
+                if self._debug_callback is not None:
+                    self._debug_callback.append("new query")
                 skip = True
                 break
 
@@ -556,6 +563,9 @@ class BackendRaster(object):
                     del self._num_pending[id(query)]
                     self._graph.remove_node(id(query))
                     self._queries.remove(query)
+
+                    if self._debug_callback is not None:
+                        self._debug_callback.append("query ended")
                     skip = True
                     break
 
@@ -571,6 +581,9 @@ class BackendRaster(object):
                         if not node["linked_queries"]:
                             self._graph.remove_node(node_id)
                     self._queries.remove(query)
+
+                    if self._debug_callback is not None:
+                        self._debug_callback.append("query dropped by main")
                     skip = True
                     break
 
@@ -600,6 +613,8 @@ class BackendRaster(object):
 
                     assert query.produced().qsize() + self._num_pending[id(query)] <= query.produced().maxsize
 
+                    if self._debug_callback is not None:
+                        self._debug_callback.append("converted some sleeping to pending")
                     skip = True
                     break
 
@@ -607,6 +622,9 @@ class BackendRaster(object):
                 for primitive in query.collected:
                     if not query.collected[primitive].empty() and query.to_collect[primitive][0] in query.to_discard[primitive]:
                         query.collected[primitive].get(block=False)
+
+                        if self._debug_callback is not None:
+                            self._debug_callback.append("getting data from collect queue to discard it")
                         skip = True
                         break
 
@@ -676,6 +694,8 @@ class BackendRaster(object):
                                     for collected_primitive in query.collected.keys():
                                         linked_query.to_discard[collected_primitive].append(next(primitive_footprints))
 
+                                if self._debug_callback is not None:
+                                    self._debug_callback.append("started to compute data")
                                 skip = True
                                 break
 
@@ -683,6 +703,7 @@ class BackendRaster(object):
                         if index == 0 and node["type"] == "to_produce":
                             # If the query has not been dropped
                             if query.produced() is not None:
+                                assert not query.produced().full()
                                 if node["is_flat"]:
                                     node["in_data"] = node["in_data"].squeeze(axis=-1)
                                 query.produced().put(node["in_data"].astype(self._dtype), timeout=1e-2)
@@ -695,6 +716,8 @@ class BackendRaster(object):
                             self._graph.remove_node(node_id)
                             self._num_pending[id(query)] -= 1
 
+                            if self._debug_callback is not None:
+                                self._debug_callback.append("put produced data in out queue")
                             skip = True
                             break
 
@@ -714,6 +737,9 @@ class BackendRaster(object):
                                 )
                                 thread_pool_task_counter[id(self._merge_pool)] += 1
                                 assert thread_pool_task_counter[id(self._merge_pool)] <= self._merge_pool._processes
+
+                                if self._debug_callback is not None:
+                                    self._debug_callback.append("started to merge data")
                                 skip = True
                                 break
 
@@ -736,7 +762,10 @@ class BackendRaster(object):
                                             node["bands"]
                                         )
                                     )
+                                    if self._debug_callback is not None:
+                                        self._debug_callback.append("started to read data")
                                 else:
+                                    assert node["type"] == "to_write"
                                     node["future"] = node["pool"].apply_async(
                                         node["function"],
                                         (
@@ -744,7 +773,10 @@ class BackendRaster(object):
                                             node["in_data"]
                                         )
                                     )
+                                    if self._debug_callback is not None:
+                                        self._debug_callback.append("started to write data")
                                 thread_pool_task_counter[id(node["pool"])] += 1
+
                                 skip = True
                                 break
 
@@ -766,6 +798,9 @@ class BackendRaster(object):
                                 self._graph.remove_edge(*in_edge)
 
                             self._graph.remove_node(node_id)
+
+                            if self._debug_callback is not None:
+                                self._debug_callback.append("ended a " + node["type"] + " operation")
                             skip = True
                             break
 
@@ -933,8 +968,8 @@ class BackendCachedRaster(BackendRaster):
                  to_collect_of_to_compute,
                  computation_tiles,
                  merge_pool,
-                 merge_function):
-
+                 merge_function,
+                 debug_callback):
 
 
         self._cache_dir = cache_dir
@@ -979,7 +1014,8 @@ class BackendCachedRaster(BackendRaster):
                          to_collect_of_to_compute,
                          computation_tiles,
                          merge_pool,
-                         merge_function
+                         merge_function,
+                         debug_callback
                         )
 
 
