@@ -16,6 +16,7 @@ def test_simple_raster():
     footprint = buzz.Footprint(tl=(0, 0), size=(10, 10), rsize=(10, 10))
 
     hej = []
+    hejj = lambda s: hej.append(s)
 
     def compute_data(fp, *args):
         return np.zeros(fp.shape)
@@ -25,7 +26,7 @@ def test_simple_raster():
         computation_function=compute_data,
         computation_pool=computation_pool,
         io_pool=io_pool,
-        debug_callback=hej
+        debug_callback=hejj
     )
 
     array = simple_raster.get_data(footprint)
@@ -137,6 +138,7 @@ def test_simple_cached():
     footprint = buzz.Footprint(tl=(0, 0), size=(10, 10), rsize=(10, 10))
 
     hej = []
+    hejj = lambda s: hej.append(s)
 
     def compute_data(fp, *args):
         return np.zeros(fp.shape)
@@ -150,7 +152,7 @@ def test_simple_cached():
         cache_dir='./test_cache/',
         cache_fps=footprint.tile_count(3, 3, boundary_effect='shrink'),
         overwrite=True,
-        debug_callback=hej,
+        debug_callback=hejj,
     )
 
     array = simple_raster.get_data(footprint)
@@ -215,8 +217,8 @@ def test_concurrent_cached():
 
 
 if __name__ == '__main__':
-    # test_simple_raster()
+    test_simple_raster()
     # test_complicated_raster_dependencies()
 
-    # test_simple_cached()
-    test_concurrent_cached()
+    test_simple_cached()
+    # test_concurrent_cached()

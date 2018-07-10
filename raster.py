@@ -486,12 +486,6 @@ class BackendRaster(object):
         return int(self._num_bands)
 
 
-    def _burn_data(self, produce_fp, produced_data, to_burn_fp, to_burn_data):
-        assert tuple(to_burn_fp.shape) == to_burn_data.shape[:2]
-        assert to_burn_fp.poly.within(produce_fp.poly)
-        produced_data[to_burn_fp.slice_in(produce_fp)] = to_burn_data
-
-
     def _scheduler(self):
         header = '{!s:25}'.format('<prim[{}] {} {}>'.format(
             ','.join(self._primitive_functions.keys()),
@@ -532,7 +526,7 @@ class BackendRaster(object):
 
                 print(self.h, qrinfo(query), f'new query with {len(query.to_produce)} to_produce, {list(len(p) for p in query.to_collect.values())} to_collect')
                 if self._debug_callback is not None:
-                    self._debug_callback.append("new query")
+                    self._debug_callback("new query", self)
                 skip = True
                 break
 
@@ -555,7 +549,7 @@ class BackendRaster(object):
                     self._queries.remove(query)
 
                     if self._debug_callback is not None:
-                        self._debug_callback.append("query ended")
+                        self._debug_callback("query ended", self)
                     skip = True
                     break
 
@@ -573,7 +567,7 @@ class BackendRaster(object):
                     self._queries.remove(query)
 
                     if self._debug_callback is not None:
-                        self._debug_callback.append("query dropped by main")
+                        self._debug_callback("query dropped by main", self)
                     skip = True
                     break
 
@@ -608,7 +602,7 @@ class BackendRaster(object):
                     assert query.produced().qsize() + self._num_pending[id(query)] <= query.produced().maxsize
 
                     if self._debug_callback is not None:
-                        self._debug_callback.append("converted some sleeping to pending")
+                        self._debug_callback("converted some sleeping to pending", self)
                     skip = True
                     break
 
@@ -618,7 +612,7 @@ class BackendRaster(object):
                         query.collected[primitive].get(block=False)
 
                         if self._debug_callback is not None:
-                            self._debug_callback.append("getting data from collect queue to discard it")
+                            self._debug_callback("getting data from collect queue to discard it", self)
                         skip = True
                         break
 
@@ -694,7 +688,7 @@ class BackendRaster(object):
                                         linked_query.to_discard[collected_primitive].append(primitive_footprint)
 
                                 if self._debug_callback is not None:
-                                    self._debug_callback.append("started to compute data")
+                                    self._debug_callback("started to compute data", self)
                                 skip = True
                                 break
 
@@ -716,7 +710,7 @@ class BackendRaster(object):
                             self._num_pending[id(query)] -= 1
 
                             if self._debug_callback is not None:
-                                self._debug_callback.append("put produced data in out queue")
+                                self._debug_callback("put produced data in out queue", self)
                             skip = True
                             break
 
@@ -738,7 +732,7 @@ class BackendRaster(object):
                                 assert thread_pool_task_counter[id(self._merge_pool)] <= self._merge_pool._processes
 
                                 if self._debug_callback is not None:
-                                    self._debug_callback.append("started to merge data")
+                                    self._debug_callback("started to merge data", self)
                                 skip = True
                                 break
 
@@ -753,16 +747,16 @@ class BackendRaster(object):
                                     if produce_node["in_data"] is None:
                                         produce_node["in_data"] = np.zeros(tuple(produce_node["footprint"].shape) + (len(query.bands),))
                                     node["future"] = self._io_pool.apply_async(
-                                        self._read_and_burn_data,
+                                        self._read_cache_data,
                                         (
+                                            node["footprint"],
                                             produce_node["footprint"],
                                             produce_node["in_data"],
-                                            node["footprint"],
                                             node["bands"]
                                         )
                                     )
                                     if self._debug_callback is not None:
-                                        self._debug_callback.append("started to read data")
+                                        self._debug_callback("started to read data", self)
                                 else:
                                     assert node["type"] == "to_write"
                                     node["future"] = node["pool"].apply_async(
@@ -773,7 +767,7 @@ class BackendRaster(object):
                                         )
                                     )
                                     if self._debug_callback is not None:
-                                        self._debug_callback.append("started to write data")
+                                        self._debug_callback("started to write data", self)
                                 thread_pool_task_counter[id(node["pool"])] += 1
 
                                 skip = True
@@ -799,7 +793,7 @@ class BackendRaster(object):
                             self._graph.remove_node(node_id)
 
                             if self._debug_callback is not None:
-                                self._debug_callback.append("ended a " + node["type"] + " operation")
+                                self._debug_callback("ended a " + node["type"] + " operation", self)
                             skip = True
                             break
 
@@ -1096,14 +1090,7 @@ class BackendCachedRaster(BackendRaster):
         return files_paths
 
 
-    def _read_and_burn_data(self, produce_fp, produced_data, cache_fp, bands):
-        assert produce_fp.same_grid(cache_fp)
-        to_burn_data = self._read_cache_data(cache_fp, produce_fp, bands)
-        to_burn_fp = produce_fp.intersection(cache_fp)
-        self._burn_data(produce_fp, produced_data, to_burn_fp, to_burn_data)
-
-
-    def _read_cache_data(self, cache_tile, produce_fp, bands):
+    def _read_cache_data(self, cache_tile, produce_fp, produced_data, bands):
         """
         reads cache data
         """
@@ -1136,20 +1123,14 @@ class BackendCachedRaster(BackendRaster):
         assert rtlx >= 0 and rtlx < cache_tile.rsizex
         assert rtly >= 0 and rtly < cache_tile.rsizey
 
-        samplebands = []
         for i in bands:
             a = gdal_ds.GetRasterBand(i).ReadAsArray(
-                int(rtlx), int(rtly), int(to_read_fp.rsizex), int(to_read_fp.rsizey)
+                int(rtlx), int(rtly), int(to_read_fp.rsizex), int(to_read_fp.rsizey), buf_obj=produced_data[..., i - 1]
             )
             if a is None:
                 raise ValueError('Could not read array (gdal error: `{}`)'.format(
                     gdal.GetLastErrorMsg()
                 ))
-            samplebands.append(a)
-        samplebands = np.stack(samplebands, -1)
-
-        assert np.array_equal(samplebands.shape[0:2], to_read_fp.shape)
-        return samplebands
 
 
 
