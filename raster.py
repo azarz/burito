@@ -523,18 +523,19 @@ class BackendRaster(object):
             # Consuming the new queries
             while self._new_queries:
                 with self._debug_watcher("scheduler::new_query"):
-                    query = self._new_queries[0]
+                    query = self._new_queries.pop(0)
 
                     # if cached raster, checking the cache
                     if isinstance(self, BackendCachedRaster):
-                        # launching the check process
-                        self._check_query(query)
+                        # adding the queries to check
+                        unique_to_read_fps = set()
+                        for to_produce in query.to_produce:
+                            unique_to_read_fps |= set(self._to_read_of_to_produce(to_produce[0]))
+                        query.to_check = list(unique_to_read_fps)
 
-                    query = self._new_queries.pop(0)
                     self._queries.append(query)
-                    self._update_graph_from_query(query)
 
-                    print(self.h, qrinfo(query), f'new query with {len(query.to_produce)} to_produce, {list(len(p) for p in query.to_collect.values())} to_collect')
+                    print(self.h, qrinfo(query), f'new query with {len(query.to_produce)} to_produce arrived')
                     skip = True
                     break
 
@@ -576,6 +577,45 @@ class BackendRaster(object):
 
                         skip = True
                         break
+
+                # If there are still fps to check
+                if query.to_check:
+                    assert isinstance(self, BackendCachedRaster)
+                    to_check_fp = query.to_check.pop(0)
+                    index = self._indices_of_cache_tiles[to_check_fp]
+
+                    if self._cache_checksum_array[index] is None and thread_pool_task_counter[id(self._io_pool)] < self._io_pool._processes:
+                        print(self.h, qrinfo(query), f'checking a cache footprint')
+                        query.checking.append((index, self._io_pool.apply_async(self._check_cache_file, (to_check_fp, ))))
+                        thread_pool_task_counter[id(self._io_pool)] += 1
+
+                        skip = True
+                        break
+
+                # If there are still fps currently being checked
+                if query.checking:
+                    assert isinstance(self, BackendCachedRaster)
+                    for still_checking in query.checking:
+                        if still_checking[1].ready():
+                            print(self.h, qrinfo(query), f'checked a cache footprint')
+                            self._cache_checksum_array[still_checking[0]] = still_checking[1].get()
+                            thread_pool_task_counter[id(self._io_pool)] -= 1
+                            query.checking.remove(still_checking)
+
+                            skip = True
+                            break
+
+                # If there are still fps to check or currently being checked, skipping query
+                if query.to_check or query.checking:
+                    assert isinstance(self, BackendCachedRaster)
+                    continue
+
+                if not query.was_included_in_graph:
+                    self._update_graph_from_query(query)
+                    query.was_included_in_graph = True
+                    print(self.h, qrinfo(query), f'new query with {list(len(p) for p in query.to_collect.values())} to_collect was added to graph')
+                    skip = True
+                    break
 
                 isolates_not_query = [
                     node_id for node_id in list(nx.isolates(self._graph))
@@ -1037,23 +1077,6 @@ class BackendCachedRaster(BackendRaster):
                         )
 
 
-
-    def _to_check_of_to_produce(self, to_produce_fps):
-        unique_to_read_fps = set()
-        for to_produce in to_produce_fps:
-            unique_to_read_fps |= set(self._to_read_of_to_produce(to_produce[0]))
-
-        for fp_to_read in unique_to_read_fps:
-            index = self._indices_of_cache_tiles[fp_to_read]
-            if self._cache_checksum_array[index] is None:
-                yield index
-
-
-    def _check_cache_fp(self, index):
-        footprint = self._cache_tiles[index]
-        assert isinstance(footprint, buzz.Footprint)
-        self._cache_checksum_array[index] = self._check_cache_file(footprint)
-
     def _check_cache_file(self, footprint):
         cache_tile_paths = self._get_cache_tile_path(footprint)
         result = False
@@ -1067,14 +1090,6 @@ class BackendCachedRaster(BackendRaster):
                     os.remove(cache_path)
 
         return result
-
-    def _check_query(self, query):
-        # print(self.h, " checking query ", threading.currentThread().getName())
-        to_produce_fps = query.to_produce
-        to_check = list(self._to_check_of_to_produce(to_produce_fps))
-        list(map(self._check_cache_fp, to_check))
-        # print(self.h, " query checked ", threading.currentThread().getName())
-
 
 
     def _get_cache_tile_path_prefix(self, cache_tile):

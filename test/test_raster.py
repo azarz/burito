@@ -180,7 +180,7 @@ def test_concurrent_cached():
         computation_pool=computation_pool,
         io_pool=io_pool,
         cached=True,
-        cache_dir='./test_cache/',
+        cache_dir='./test_cache/0/',
         cache_fps=footprint.tile_count(3, 3, boundary_effect='shrink'),
         overwrite=True
     )
@@ -193,7 +193,7 @@ def test_concurrent_cached():
         primitives={"prim": simple_raster.get_multi_data_queue},
         to_collect_of_to_compute=lambda fp: {"prim": fp},
         cached=True,
-        cache_dir='./test_cache1/',
+        cache_dir='./test_cache/1/',
         cache_fps=footprint.tile_count(3, 3, boundary_effect='shrink'),
         overwrite=True
     )
@@ -206,7 +206,7 @@ def test_concurrent_cached():
         primitives={"prim": simple_raster.get_multi_data_queue},
         to_collect_of_to_compute=lambda fp: {"prim": fp},
         cached=True,
-        cache_dir='./test_cache2/',
+        cache_dir='./test_cache/2/',
         cache_fps=footprint.tile_count(3, 3, boundary_effect='shrink'),
         overwrite=True
     )

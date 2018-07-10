@@ -20,7 +20,10 @@ class Query(object):
 
         self.bands = bands
 
-        # Use to do the raster checking of cache file asynchonously (holds an AsyncResult)
-        self.cache_checking = None
+        # Used in cached rasters
+        self.to_check = []
+        self.checking = []
 
         self.is_flat = is_flat
+
+        self.was_included_in_graph = False
