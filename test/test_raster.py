@@ -132,7 +132,91 @@ def test_complicated_raster_dependencies():
 
 
 def test_simple_cached():
+    computation_pool = mp.pool.ThreadPool(1)
+    io_pool = mp.pool.ThreadPool(1)
+    footprint = buzz.Footprint(tl=(0, 0), size=(10, 10), rsize=(10, 10))
+
+    hej = []
+
+    def compute_data(fp, *args):
+        return np.zeros(fp.shape)
+
+    simple_raster = Raster(
+        footprint=footprint,
+        computation_function=compute_data,
+        computation_pool=computation_pool,
+        io_pool=io_pool,
+        cached=True,
+        cache_dir='./test_cache/',
+        cache_fps=footprint.tile_count(3, 3, boundary_effect='shrink'),
+        overwrite=True,
+        debug_callback=hej,
+    )
+
+    array = simple_raster.get_data(footprint)
+
+    assert np.all(array == 0)
+    print(hej)
+
+
+
+def test_concurrent_cached():
+    computation_pool = mp.pool.ThreadPool(1)
+    io_pool = mp.pool.ThreadPool(1)
+    footprint = buzz.Footprint(tl=(0, 0), size=(10, 10), rsize=(10, 10))
+
+
+
+    def compute_data(fp, *args):
+        return np.zeros(fp.shape)
+
+    simple_raster = Raster(
+        footprint=footprint,
+        computation_function=compute_data,
+        computation_pool=computation_pool,
+        io_pool=io_pool,
+        cached=True,
+        cache_dir='./test_cache/',
+        cache_fps=footprint.tile_count(3, 3, boundary_effect='shrink'),
+        overwrite=True
+    )
+
+    dependent_raster_1 = Raster(
+        footprint=footprint,
+        computation_function=compute_data,
+        computation_pool=computation_pool,
+        io_pool=io_pool,
+        primitives={"prim": simple_raster.get_multi_data_queue},
+        to_collect_of_to_compute=lambda fp: {"prim": fp},
+        cached=True,
+        cache_dir='./test_cache1/',
+        cache_fps=footprint.tile_count(3, 3, boundary_effect='shrink'),
+        overwrite=True
+    )
+
+    dependent_raster_2 = Raster(
+        footprint=footprint,
+        computation_function=compute_data,
+        computation_pool=computation_pool,
+        io_pool=io_pool,
+        primitives={"prim": simple_raster.get_multi_data_queue},
+        to_collect_of_to_compute=lambda fp: {"prim": fp},
+        cached=True,
+        cache_dir='./test_cache2/',
+        cache_fps=footprint.tile_count(3, 3, boundary_effect='shrink'),
+        overwrite=True
+    )
+
+    arrays1 = dependent_raster_1.get_multi_data(footprint.tile_count(5, 5).flat)
+    arrays2 = dependent_raster_2.get_multi_data(reversed(list(footprint.tile_count(5, 5).flat)))
+
+    assert np.all(next(arrays1) == 0)
+    assert np.all(next(arrays2) == 0)
+
 
 if __name__ == '__main__':
-    test_simple_raster()
+    # test_simple_raster()
     # test_complicated_raster_dependencies()
+
+    # test_simple_cached()
+    test_concurrent_cached()

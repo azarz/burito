@@ -972,6 +972,10 @@ class BackendCachedRaster(BackendRaster):
 
 
         self._cache_dir = cache_dir
+        if cache_tiles is None:
+            raise ValueError("cache tiles must be provided")
+        if not isinstance(cache_tiles, np.ndarray):
+            raise ValueError("cache tiles must be in np array")
         self._cache_tiles = cache_tiles
 
         self._indices_of_cache_tiles = {
@@ -998,7 +1002,8 @@ class BackendCachedRaster(BackendRaster):
 
         self._cache_idx = rtree.index.Index()
         cache_fps = list(cache_tiles.flat)
-        assert isinstance(cache_fps[0], buzz.Footprint)
+        if not isinstance(cache_fps[0], buzz.Footprint):
+            raise ValueError("cache tiles must be footprints")
         pxsizex = min(fp.pxsize[0] for fp in cache_fps)
         bound_inset = np.r_[
             pxsizex / 4,
@@ -1332,6 +1337,7 @@ class BackendCachedRaster(BackendRaster):
                     for to_compute in to_compute_multi:
                         to_compute_uid = str(repr(to_compute) + "to_compute")
                         print(self.h, qrinfo(new_query), f'{"to_compute":>15}', to_compute_uid)
+                        new_query.to_compute.append(to_compute)
                         if to_compute_uid in self._graph.nodes():
                             self._graph.nodes[to_compute_uid]["linked_to_produce"].add(to_produce_uid)
                             self._graph.nodes[to_compute_uid]["linked_queries"].add(new_query)
@@ -1348,7 +1354,6 @@ class BackendCachedRaster(BackendRaster):
                                 linked_queries=set([new_query]),
                                 bands=new_query.bands
                             )
-                            new_query.to_compute.append(to_compute)
 
                             if self._to_collect_of_to_compute is not None:
                                 multi_to_collect = self._to_collect_of_to_compute(to_compute)
