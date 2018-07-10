@@ -142,6 +142,7 @@ class Raster(object):
                  computation_pool=None,
                  primitives=None,
                  to_collect_of_to_compute=None,
+                 max_computation_size=None,
                  computation_fps=None,
                  merge_pool=None,
                  merge_function=None,
@@ -182,7 +183,7 @@ class Raster(object):
                                            computation_pool,
                                            primitives,
                                            to_collect_of_to_compute,
-                                           computation_fps,
+                                           max_computation_size,
                                            merge_pool,
                                            merge_function,
                                            debug_callback
@@ -328,7 +329,7 @@ class BackendRaster(object):
                  computation_pool,
                  primitives,
                  to_collect_of_to_compute,
-                 computation_tiles,
+                 max_computation_size,
                  merge_pool,
                  merge_function,
                  debug_callback):
@@ -374,11 +375,12 @@ class BackendRaster(object):
             for key in primitives
         }
 
+
         if primitives.keys() and to_collect_of_to_compute is None:
             raise ValueError("must provide to_collect_of_to_compute when having primitives")
         self._to_collect_of_to_compute = to_collect_of_to_compute
 
-        self._computation_tiles = computation_tiles
+        self._max_computation_size = max_computation_size
 
         self._queries = []
         self._new_queries = []
@@ -403,22 +405,6 @@ class BackendRaster(object):
         self._num_pending = defaultdict(int)
 
         self._stop_scheduler = False
-
-        self._computation_idx = rtree.index.Index()
-
-        if computation_tiles is not None:
-            computation_fps = list(computation_tiles.flat)
-            assert isinstance(computation_fps[0], buzz.Footprint)
-            pxsizex = min(fp.pxsize[0] for fp in computation_fps)
-            bound_inset = np.r_[
-                pxsizex / 4,
-                pxsizex / 4,
-                pxsizex / -4,
-                pxsizex / -4,
-            ]
-
-            for i, fp in enumerate(computation_fps):
-                self._computation_idx.insert(i, fp.bounds + bound_inset)
 
 
     def _pressure_ratio(self, query):
@@ -822,8 +808,9 @@ class BackendRaster(object):
         return results
 
     def _to_compute_of_to_produce(self, fp):
-        to_compute_list = self._computation_idx.intersection(fp.bounds)
-        return [list(self._computation_tiles.flat)[i] for i in to_compute_list]
+        count = np.ceil(fp.rsize / self._max_computation_size)
+        tiles = fp.tile_count(*count)
+        return list(tiles.flat)
 
 
     def _update_graph_from_query(self, new_query):
@@ -887,7 +874,7 @@ class BackendRaster(object):
             )
             self._graph.add_edge(to_produce_uid, to_merge_uid)
 
-            if self._computation_tiles is not None:
+            if self._max_computation_size is not None:
                 multi_to_compute = self._to_compute_of_to_produce(to_merge)
             else:
                 multi_to_compute = [to_produce]
@@ -1009,6 +996,22 @@ class BackendCachedRaster(BackendRaster):
         for i, fp in enumerate(cache_fps):
             self._cache_idx.insert(i, fp.bounds + bound_inset)
 
+        self._computation_tiles = computation_tiles
+
+        self._computation_idx = rtree.index.Index()
+        computation_fps = list(computation_tiles.flat)
+        assert isinstance(computation_fps[0], buzz.Footprint)
+        pxsizex = min(fp.pxsize[0] for fp in computation_fps)
+        bound_inset = np.r_[
+            pxsizex / 4,
+            pxsizex / 4,
+            pxsizex / -4,
+            pxsizex / -4,
+        ]
+
+        for i, fp in enumerate(computation_fps):
+            self._computation_idx.insert(i, fp.bounds + bound_inset)
+
 
         super().__init__(footprint, dtype, nbands, nodata, srs,
                          computation_function,
@@ -1016,10 +1019,10 @@ class BackendCachedRaster(BackendRaster):
                          computation_pool,
                          primitives,
                          to_collect_of_to_compute,
-                         computation_tiles,
-                         merge_pool,
-                         merge_function,
-                         debug_callback
+                         max_computation_size=None,
+                         merge_pool=merge_pool,
+                         merge_function=merge_function,
+                         debug_callback=debug_callback
                         )
 
 
