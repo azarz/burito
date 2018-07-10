@@ -38,6 +38,29 @@ qryids = collections.defaultdict(lambda: f'{len(qryids):02d}')
 queids = collections.defaultdict(lambda: f'{len(queids):02d}')
 _debug_lock = threading.RLock()
 
+
+
+class DebugCtxMngmnt(object):
+    def __init__(self, function, raster):
+        self._function = function
+        self.raster = raster
+
+    def __call__(self, string, **kwargs):
+        self.string = string
+        self.kwargs = kwargs
+        return self
+
+    def __enter__(self):
+        if self._function is not None:
+            self._function(self.string + "::before", self.raster, **self.kwargs)
+
+    def __exit__(self, _, __, ___):
+        if self._function is not None:
+            self._function(self.string + "::after", self.raster, **self.kwargs)
+
+
+
+
 def qeinfo(q):
     with _debug_lock:
         return f'{queids[q] if q is not None else None}'
@@ -334,7 +357,7 @@ class BackendRaster(object):
                  merge_function,
                  debug_callback):
 
-        self._debug_callback = debug_callback
+        self._debug_watcher = DebugCtxMngmnt(debug_callback, self)
 
         self._full_fp = footprint
         if computation_function is None:
@@ -499,22 +522,21 @@ class BackendRaster(object):
 
             # Consuming the new queries
             while self._new_queries:
-                query = self._new_queries[0]
+                with self._debug_watcher("scheduler::new_query"):
+                    query = self._new_queries[0]
 
-                # if cached raster, checking the cache
-                if isinstance(self, BackendCachedRaster):
-                    # launching the check process
-                    self._check_query(query)
+                    # if cached raster, checking the cache
+                    if isinstance(self, BackendCachedRaster):
+                        # launching the check process
+                        self._check_query(query)
 
-                query = self._new_queries.pop(0)
-                self._queries.append(query)
-                self._update_graph_from_query(query)
+                    query = self._new_queries.pop(0)
+                    self._queries.append(query)
+                    self._update_graph_from_query(query)
 
-                print(self.h, qrinfo(query), f'new query with {len(query.to_produce)} to_produce, {list(len(p) for p in query.to_collect.values())} to_collect')
-                if self._debug_callback is not None:
-                    self._debug_callback("new query", self)
-                skip = True
-                break
+                    print(self.h, qrinfo(query), f'new query with {len(query.to_produce)} to_produce, {list(len(p) for p in query.to_collect.values())} to_collect')
+                    skip = True
+                    break
 
             # ordering queries accroding to their pressure
             assert len(set(map(id, self._queries))) == len(self._queries)
@@ -529,33 +551,31 @@ class BackendRaster(object):
 
                 # If all to_produced was consumed: query ended
                 if not query.to_produce:
-                    print(self.h, qrinfo(query), f'cleaning: treated all produce')
-                    del self._num_pending[id(query)]
-                    self._graph.remove_node(id(query))
-                    self._queries.remove(query)
+                    with self._debug_watcher("scheduler::cleaning_ended_query"):
+                        print(self.h, qrinfo(query), f'cleaning: treated all produce')
+                        del self._num_pending[id(query)]
+                        self._graph.remove_node(id(query))
+                        self._queries.remove(query)
 
-                    if self._debug_callback is not None:
-                        self._debug_callback("query ended", self)
-                    skip = True
-                    break
+                        skip = True
+                        break
 
                 # If the query has been dropped
                 if query.produced() is None:
-                    print(self.h, qrinfo(query), f'cleaning: dropped by main program')
-                    if self._num_pending[id(query)]: # could be false because dropped too early
-                        del self._num_pending[id(query)]
-                    to_delete_nodes = list(nx.dfs_postorder_nodes(self._graph, source=id(query)))
-                    for node_id in to_delete_nodes:
-                        node = self._graph.nodes[node_id]
-                        node["linked_queries"].remove(query)
-                        if not node["linked_queries"]:
-                            self._graph.remove_node(node_id)
-                    self._queries.remove(query)
+                    with self._debug_watcher("scheduler::cleaning_dropped_query"):
+                        print(self.h, qrinfo(query), f'cleaning: dropped by main program')
+                        if self._num_pending[id(query)]: # could be false because dropped too early
+                            del self._num_pending[id(query)]
+                        to_delete_nodes = list(nx.dfs_postorder_nodes(self._graph, source=id(query)))
+                        for node_id in to_delete_nodes:
+                            node = self._graph.nodes[node_id]
+                            node["linked_queries"].remove(query)
+                            if not node["linked_queries"]:
+                                self._graph.remove_node(node_id)
+                        self._queries.remove(query)
 
-                    if self._debug_callback is not None:
-                        self._debug_callback("query dropped by main", self)
-                    skip = True
-                    break
+                        skip = True
+                        break
 
                 isolates_not_query = [
                     node_id for node_id in list(nx.isolates(self._graph))
@@ -571,36 +591,33 @@ class BackendRaster(object):
                 # detecting which produce footprints are available
                 # while there is space
                 while query.produced().qsize() + self._num_pending[id(query)] < query.produced().maxsize and query.to_produce[-1][1] == "sleeping":
-                    # getting the first sleeping to_produce
-                    first_sleeping_i = [to_produce[1] for to_produce in query.to_produce].index('sleeping')
-                    to_produce_available = query.to_produce[first_sleeping_i][0]
+                    with self._debug_watcher("scheduler::produce_sleeping_to_pending"):
+                        # getting the first sleeping to_produce
+                        first_sleeping_i = [to_produce[1] for to_produce in query.to_produce].index('sleeping')
+                        to_produce_available = query.to_produce[first_sleeping_i][0]
 
-                    # getting its id in the graph
-                    to_produce_available_id = query.to_produce[first_sleeping_i][2]
+                        # getting its id in the graph
+                        to_produce_available_id = query.to_produce[first_sleeping_i][2]
 
-                    available_to_produce.add(to_produce_available_id)
+                        available_to_produce.add(to_produce_available_id)
 
-                    to_produce_index = query.to_produce.index((to_produce_available, "sleeping", to_produce_available_id))
-                    query.to_produce[to_produce_index] = (to_produce_available, "pending", to_produce_available_id)
+                        to_produce_index = query.to_produce.index((to_produce_available, "sleeping", to_produce_available_id))
+                        query.to_produce[to_produce_index] = (to_produce_available, "pending", to_produce_available_id)
 
-                    self._num_pending[id(query)] += 1
+                        self._num_pending[id(query)] += 1
 
-                    assert query.produced().qsize() + self._num_pending[id(query)] <= query.produced().maxsize
+                        assert query.produced().qsize() + self._num_pending[id(query)] <= query.produced().maxsize
 
-                    if self._debug_callback is not None:
-                        self._debug_callback("converted some sleeping to pending", self)
-                    skip = True
-                    break
+                        skip = True
+                        break
 
                 # getting the in_queue of data to discard
                 for primitive in query.collected:
                     if not query.collected[primitive].empty() and query.to_collect[primitive][0] in query.to_discard[primitive]:
-                        query.collected[primitive].get(block=False)
-
-                        if self._debug_callback is not None:
-                            self._debug_callback("getting data from collect queue to discard it", self)
-                        skip = True
-                        break
+                        with self._debug_watcher("scheduler::discard"):
+                            query.collected[primitive].get(block=False)
+                            skip = True
+                            break
 
                 # iterating through the graph
                 for index, to_produce in enumerate(query.to_produce):
@@ -643,62 +660,60 @@ class BackendRaster(object):
                                 continue
 
                             if thread_pool_task_counter[id(node["pool"])] < node["pool"]._processes:
-                                collected_data = []
-                                primitive_footprints = []
+                                with self._debug_watcher("scheduler::compute"):
+                                    collected_data = []
+                                    primitive_footprints = []
 
-                                get_counter[query] += 1
-                                print(self.h, qrinfo(query), f'compute data for the {get_counter[query]:02d}th time node_id:({node_id})')
+                                    get_counter[query] += 1
+                                    print(self.h, qrinfo(query), f'compute data for the {get_counter[query]:02d}th time node_id:({node_id})')
 
-                                for collected_primitive in query.collected.keys():
-                                    collected_data.append(query.collected[collected_primitive].get(block=False))
-                                    primitive_footprints.append(query.to_collect[collected_primitive].pop(0))
+                                    for collected_primitive in query.collected.keys():
+                                        collected_data.append(query.collected[collected_primitive].get(block=False))
+                                        primitive_footprints.append(query.to_collect[collected_primitive].pop(0))
 
-                                assert len(collected_data) == len(self._primitive_functions.keys())
+                                    assert len(collected_data) == len(self._primitive_functions.keys())
 
-                                node["future"] = self._computation_pool.apply_async(
-                                    self._compute_data,
-                                    (
-                                        node["footprint"],
-                                        collected_data,
-                                        primitive_footprints,
-                                        self
+                                    node["future"] = self._computation_pool.apply_async(
+                                        self._compute_data,
+                                        (
+                                            node["footprint"],
+                                            collected_data,
+                                            primitive_footprints,
+                                            self
+                                        )
                                     )
-                                )
 
-                                thread_pool_task_counter[id(self._computation_pool)] += 1
-                                query.to_compute.pop(0)
-                                node["linked_queries"].remove(query)
+                                    thread_pool_task_counter[id(self._computation_pool)] += 1
+                                    query.to_compute.pop(0)
+                                    node["linked_queries"].remove(query)
 
-                                for linked_query in node["linked_queries"]:
-                                    for collected_primitive, primitive_footprint in zip(query.collected.keys(), primitive_footprints):
-                                        linked_query.to_discard[collected_primitive].append(primitive_footprint)
+                                    for linked_query in node["linked_queries"]:
+                                        for collected_primitive, primitive_footprint in zip(query.collected.keys(), primitive_footprints):
+                                            linked_query.to_discard[collected_primitive].append(primitive_footprint)
 
-                                if self._debug_callback is not None:
-                                    self._debug_callback("started to compute data", self)
-                                skip = True
-                                break
+                                    skip = True
+                                    break
 
                         # if the deepest is to_produce, updating produced
                         if index == 0 and node["type"] == "to_produce":
-                            # If the query has not been dropped
-                            if query.produced() is not None:
-                                assert not query.produced().full()
-                                if node["is_flat"]:
-                                    node["in_data"] = node["in_data"].squeeze(axis=-1)
-                                query.produced().put(node["in_data"].astype(self._dtype), timeout=1e-2)
+                            with self._debug_watcher("scheduler::put_data"):
+                                # If the query has not been dropped
+                                if query.produced() is not None:
+                                    assert not query.produced().full()
+                                    if node["is_flat"]:
+                                        node["in_data"] = node["in_data"].squeeze(axis=-1)
+                                    query.produced().put(node["in_data"].astype(self._dtype), timeout=1e-2)
 
-                            query.to_produce.pop(0)
+                                query.to_produce.pop(0)
 
-                            put_counter[query] += 1
-                            print(self.h, qrinfo(query), f'    put data for the {put_counter[query]:02d}th time, {len(query.to_produce):02d} left')
+                                put_counter[query] += 1
+                                print(self.h, qrinfo(query), f'    put data for the {put_counter[query]:02d}th time, {len(query.to_produce):02d} left')
 
-                            self._graph.remove_node(node_id)
-                            self._num_pending[id(query)] -= 1
+                                self._graph.remove_node(node_id)
+                                self._num_pending[id(query)] -= 1
 
-                            if self._debug_callback is not None:
-                                self._debug_callback("put produced data in out queue", self)
-                            skip = True
-                            break
+                                skip = True
+                                break
 
                         # skipping the ready to_produce that are not at index 0
                         if node["type"] == "to_produce":
@@ -706,82 +721,78 @@ class BackendRaster(object):
 
                         if node["type"] == "to_merge" and node["future"] is None:
                             if thread_pool_task_counter[id(self._merge_pool)] < self._merge_pool._processes:
-                                node["future"] = self._merge_pool.apply_async(
-                                    node["function"],
-                                    (
-                                        node["footprint"],
-                                        node["in_fp"],
-                                        node["in_data"]
+                                with self._debug_watcher("scheduler::starting_merge"):
+                                    node["future"] = self._merge_pool.apply_async(
+                                        node["function"],
+                                        (
+                                            node["footprint"],
+                                            node["in_fp"],
+                                            node["in_data"]
+                                        )
                                     )
-                                )
-                                thread_pool_task_counter[id(self._merge_pool)] += 1
-                                assert thread_pool_task_counter[id(self._merge_pool)] <= self._merge_pool._processes
+                                    thread_pool_task_counter[id(self._merge_pool)] += 1
+                                    assert thread_pool_task_counter[id(self._merge_pool)] <= self._merge_pool._processes
 
-                                if self._debug_callback is not None:
-                                    self._debug_callback("started to merge data", self)
-                                skip = True
-                                break
+                                    skip = True
+                                    break
 
                         in_edges = list(self._graph.in_edges(node_id))
 
                         if node["future"] is None:
                             if thread_pool_task_counter[id(node["pool"])] < node["pool"]._processes:
                                 if node["type"] == "to_read":
-                                    assert len(in_edges) == 1
-                                    in_edge = in_edges[0]
-                                    produce_node = self._graph.nodes[in_edge[0]]
-                                    if produce_node["in_data"] is None:
-                                        produce_node["in_data"] = np.zeros(tuple(produce_node["footprint"].shape) + (len(query.bands),))
-                                    node["future"] = self._io_pool.apply_async(
-                                        self._read_cache_data,
-                                        (
-                                            node["footprint"],
-                                            produce_node["footprint"],
-                                            produce_node["in_data"],
-                                            node["bands"]
+                                    with self._debug_watcher("scheduler::starting_read"):
+                                        assert len(in_edges) == 1
+                                        in_edge = in_edges[0]
+                                        produce_node = self._graph.nodes[in_edge[0]]
+                                        if produce_node["in_data"] is None:
+                                            produce_node["in_data"] = np.zeros(tuple(produce_node["footprint"].shape) + (len(query.bands),))
+                                        node["future"] = self._io_pool.apply_async(
+                                            self._read_cache_data,
+                                            (
+                                                node["footprint"],
+                                                produce_node["footprint"],
+                                                produce_node["in_data"],
+                                                node["bands"]
+                                            )
                                         )
-                                    )
-                                    if self._debug_callback is not None:
-                                        self._debug_callback("started to read data", self)
                                 else:
                                     assert node["type"] == "to_write"
-                                    node["future"] = node["pool"].apply_async(
-                                        node["function"],
-                                        (
-                                            node["footprint"],
-                                            node["in_data"]
+                                    with self._debug_watcher("scheduler::starting_write"):
+                                        node["future"] = node["pool"].apply_async(
+                                            node["function"],
+                                            (
+                                                node["footprint"],
+                                                node["in_data"]
+                                            )
                                         )
-                                    )
-                                    if self._debug_callback is not None:
-                                        self._debug_callback("started to write data", self)
-                                thread_pool_task_counter[id(node["pool"])] += 1
+                                    thread_pool_task_counter[id(node["pool"])] += 1
 
                                 skip = True
                                 break
 
                         elif node["future"].ready():
-                            in_data = node["future"].get()
-                            if in_data is not None:
-                                in_data = in_data.astype(self._dtype).reshape(tuple(node["footprint"].shape) + (len(node["bands"]),))
-                            thread_pool_task_counter[id(node["pool"])] -= 1
+                            with self._debug_watcher("scheduler::ending_" + node["type"] + "_operation"):
+                                in_data = node["future"].get()
+                                if in_data is not None:
+                                    in_data = in_data.astype(self._dtype).reshape(tuple(node["footprint"].shape) + (len(node["bands"]),))
+                                thread_pool_task_counter[id(node["pool"])] -= 1
 
-                            for in_edge in in_edges:
-                                in_node = self._graph.nodes[in_edge[0]]
-                                if in_node["type"] == "to_merge":
-                                    in_node["in_data"].append(in_data)
-                                    in_node["in_fp"].append(node["footprint"])
-                                elif in_node["type"] == "to_produce" and node["type"] == "to_read":
-                                    pass
-                                else:
-                                    in_node["in_data"] = in_data
-                                self._graph.remove_edge(*in_edge)
+                                for in_edge in in_edges:
+                                    in_node = self._graph.nodes[in_edge[0]]
+                                    if in_node["type"] == "to_merge":
+                                        in_node["in_data"].append(in_data)
+                                        in_node["in_fp"].append(node["footprint"])
+                                    elif in_node["type"] == "to_produce" and node["type"] == "to_read":
+                                        pass
+                                    else:
+                                        in_node["in_data"] = in_data
+                                    self._graph.remove_edge(*in_edge)
 
-                            self._graph.remove_node(node_id)
+                                self._graph.remove_node(node_id)
 
-                            if self._debug_callback is not None:
-                                self._debug_callback("ended a " + node["type"] + " operation", self)
-                            skip = True
-                            break
+                                skip = True
+                                break
 
             if not skip:
                 if not self._queries:
