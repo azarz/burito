@@ -1347,7 +1347,8 @@ class BackendCachedRaster(BackendRaster):
                     for to_compute in to_compute_multi:
                         to_compute_uid = str(repr(to_compute) + "to_compute")
                         print(self.h, qrinfo(new_query), f'{"to_compute":>15}', to_compute_uid)
-                        new_query.to_compute.append(to_compute)
+                        if to_compute not in new_query.to_compute:
+                            new_query.to_compute.append(to_compute)
                         if to_compute_uid in self._graph.nodes():
                             self._graph.nodes[to_compute_uid]["linked_to_produce"].add(to_produce_uid)
                             self._graph.nodes[to_compute_uid]["linked_queries"].add(new_query)
