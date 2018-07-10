@@ -16,7 +16,8 @@ def test_simple_raster():
     footprint = buzz.Footprint(tl=(0, 0), size=(10, 10), rsize=(10, 10))
 
     hej = []
-    hejj = lambda s: hej.append(s)
+    def hejj(s, r):
+        hej.append(s)
 
     def compute_data(fp, *args):
         return np.zeros(fp.shape)
@@ -138,7 +139,8 @@ def test_simple_cached():
     footprint = buzz.Footprint(tl=(0, 0), size=(10, 10), rsize=(10, 10))
 
     hej = []
-    hejj = lambda s: hej.append(s)
+    def hejj(s, r):
+        hej.append(s)
 
     def compute_data(fp, *args):
         return np.zeros(fp.shape)
