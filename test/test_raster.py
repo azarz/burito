@@ -125,7 +125,7 @@ def test_complicated_raster_dependencies():
     summ_array = summ_raster.get_data(footprint)
     diff_array = diff_raster.get_data(footprint)
     prod_array = product_raster.get_data(footprint)
-    prod2 = product.get_data(footprint)
+    prod2 = product_raster.get_data(footprint)
 
     assert summ_array[0, 1] == 4
     assert diff_array[0, 1] == -2
@@ -220,7 +220,7 @@ def test_concurrent_cached():
 
 if __name__ == '__main__':
     test_simple_raster()
-    # test_complicated_raster_dependencies()
+    test_complicated_raster_dependencies()
 
     test_simple_cached()
-    # test_concurrent_cached()
+    test_concurrent_cached()
