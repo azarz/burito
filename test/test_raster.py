@@ -33,7 +33,7 @@ def test_simple_raster():
     array = simple_raster.get_data(footprint)
 
     assert np.all(array == 0)
-    print(hej)
+    # print(hej)
 
 
 def test_complicated_raster_dependencies():
@@ -160,7 +160,7 @@ def test_simple_cached():
     array = simple_raster.get_data(footprint)
 
     assert np.all(array == 0)
-    print(hej)
+    # print(hej)
 
 
 
@@ -219,8 +219,8 @@ def test_concurrent_cached():
 
 
 if __name__ == '__main__':
-    test_simple_raster()
-    test_complicated_raster_dependencies()
+    # test_simple_raster()
+    # test_complicated_raster_dependencies()
 
-    test_simple_cached()
+    # test_simple_cached()
     test_concurrent_cached()

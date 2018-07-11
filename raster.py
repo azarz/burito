@@ -26,9 +26,9 @@ from osgeo import gdal, osr
 from buzzard._tools import conv
 import names
 
+from burito.uids_of_paths import md5
 from burito.query import Query
 from burito.singleton_counter import SingletonCounter
-from burito.checksum import checksum, checksum_file
 from burito.get_data_with_primitive import GetDataWithPrimitive
 
 
@@ -579,15 +579,13 @@ class BackendRaster(object):
                         break
 
                 # If there are still fps to check
-                if query.to_check:
+                if query.to_check and thread_pool_task_counter[id(self._io_pool)] < self._io_pool._processes:
                     assert isinstance(self, BackendCachedRaster)
-                    to_check_fp = query.to_check[0]
-                    index = self._indices_of_cache_tiles[to_check_fp]
+                    with self._debug_watcher("scheduler::starting_check_fp"):
+                        to_check_fp = query.to_check.pop(0)
+                        index = self._indices_of_cache_tiles[to_check_fp]
 
-                    if self._cache_checksum_array[index] is None and thread_pool_task_counter[id(self._io_pool)] < self._io_pool._processes:
-                        with self._debug_watcher("scheduler::starting_check_fp"):
-                            to_check_fp = query.to_check.pop(0)
-                            index = self._indices_of_cache_tiles[to_check_fp]
+                        if self._cache_checksum_array[index] is None:
                             print(self.h, qrinfo(query), f'checking a cache footprint')
                             query.checking.append((index, self._io_pool.apply_async(self._check_cache_file, (to_check_fp, ))))
                             thread_pool_task_counter[id(self._io_pool)] += 1
@@ -768,7 +766,7 @@ class BackendRaster(object):
                             if thread_pool_task_counter[id(self._merge_pool)] < self._merge_pool._processes:
                                 with self._debug_watcher("scheduler::starting_merge"):
                                     node["future"] = self._merge_pool.apply_async(
-                                        node["function"],
+                                        self._merge_data,
                                         (
                                             node["footprint"],
                                             node["in_fp"],
@@ -808,7 +806,7 @@ class BackendRaster(object):
                                     assert node["type"] == "to_write"
                                     with self._debug_watcher("scheduler::starting_write"):
                                         node["future"] = node["pool"].apply_async(
-                                            node["function"],
+                                            self._write_cache_data,
                                             (
                                                 node["footprint"],
                                                 node["in_data"]
@@ -822,6 +820,8 @@ class BackendRaster(object):
                         elif node["future"].ready():
                             with self._debug_watcher("scheduler::ending_" + node["type"] + "_operation"):
                                 in_data = node["future"].get()
+                                if node["type"] == "to_write":
+                                    self._cache_checksum_array[self._indices_of_cache_tiles[node["footprint"]]] = True
                                 if in_data is not None:
                                     in_data = in_data.astype(self._dtype).reshape(tuple(node["footprint"].shape) + (len(node["bands"]),))
                                 thread_pool_task_counter[id(node["pool"])] -= 1
@@ -924,7 +924,6 @@ class BackendRaster(object):
                 futures=[],
                 type="to_merge",
                 pool=self._merge_pool,
-                function=self._merge_data,
                 in_data=[],
                 in_fp=[],
                 linked_to_produce=set([to_produce_uid]),
@@ -952,7 +951,6 @@ class BackendRaster(object):
                     future=None,
                     type="to_compute",
                     pool=self._computation_pool,
-                    function=self._compute_data,
                     in_data=None,
                     linked_to_produce=set([to_produce_uid]),
                     linked_queries=set([new_query]),
@@ -1092,7 +1090,7 @@ class BackendCachedRaster(BackendRaster):
             for cache_path in cache_tile_paths:
                 checksum_dot_tif = cache_path.split('_')[-1]
                 file_checksum = checksum_dot_tif.split('.')[0]
-                if int(file_checksum, base=16) == checksum_file(cache_path):
+                if md5(cache_path) == file_checksum:
                     result = True
                 else:
                     os.remove(cache_path)
@@ -1123,7 +1121,7 @@ class BackendCachedRaster(BackendRaster):
         Returns a string, which is a path to a cache tile from its fp
         """
         prefix = self._get_cache_tile_path_prefix(cache_tile)
-        files_paths = glob.glob(prefix + "_0x*.tif")
+        files_paths = glob.glob(prefix + "_*.tif")
         return files_paths
 
 
@@ -1135,7 +1133,7 @@ class BackendCachedRaster(BackendRaster):
 
         filepaths = self._get_cache_tile_path(cache_tile)
 
-        assert len(filepaths) == 1
+        assert len(filepaths) == 1, len(filepaths)
         filepath = filepaths[0]
 
         # Open a raster datasource
@@ -1179,9 +1177,8 @@ class BackendCachedRaster(BackendRaster):
         writes cache data
         """
         # print(self.h, "writing ")
-        cs = checksum(data)
-        filepath = self._get_cache_tile_path_prefix(cache_tile) + "_" + f'{cs:#010x}' + ".tif"
         sr = self.wkt_origin
+        filepath = str(uuid.uuid4())
 
         dr = gdal.GetDriverByName("GTiff")
         if os.path.isfile(filepath):
@@ -1247,7 +1244,15 @@ class BackendCachedRaster(BackendRaster):
         del gdalband
         del gdal_ds
 
-        self._cache_checksum_array[self._indices_of_cache_tiles[cache_tile]] = True
+        file_hash = md5(filepath)
+
+        new_file_path = self._get_cache_tile_path_prefix(cache_tile) + "_" + file_hash + ".tif"
+
+        os.rename(filepath, new_file_path)
+
+
+
+        
 
 
     def _update_graph_from_query(self, new_query):
@@ -1299,7 +1304,6 @@ class BackendCachedRaster(BackendRaster):
                     future=None,
                     type="to_read",
                     pool=self._io_pool,
-                    function=self._read_cache_data,
                     linked_to_produce=set([to_produce_uid]),
                     linked_queries=set([new_query]),
                     bands=new_query.bands
@@ -1322,7 +1326,6 @@ class BackendCachedRaster(BackendRaster):
                             future=None,
                             type="to_write",
                             pool=self._io_pool,
-                            function=self._write_cache_data,
                             in_data=None,
                             linked_to_produce=set([to_produce_uid]),
                             linked_queries=set([new_query]),
@@ -1344,7 +1347,6 @@ class BackendCachedRaster(BackendRaster):
                             futures=[],
                             type="to_merge",
                             pool=self._merge_pool,
-                            function=self._merge_data,
                             in_data=[],
                             in_fp=[],
                             linked_to_produce=set([to_produce_uid]),
@@ -1370,7 +1372,6 @@ class BackendCachedRaster(BackendRaster):
                                 future=None,
                                 type="to_compute",
                                 pool=self._computation_pool,
-                                function=self._compute_data,
                                 in_data=None,
                                 linked_to_produce=set([to_produce_uid]),
                                 linked_queries=set([new_query]),
