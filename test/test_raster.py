@@ -6,8 +6,18 @@ import numpy as np
 import multiprocessing as mp
 import multiprocessing.pool
 import buzzard as buzz
+import pandas as pd
 
 from burito.raster import Raster
+
+
+class RasterStateOberver():
+    def __init__(self):
+        self.df = pd.DataFrame()
+
+    def callback(self, string, raster, **kwargs):
+        self.df = self.df.append(dict(zip(['op_tag', 'nbands'], [string, raster.nbands])), ignore_index=True)
+
 
 
 def test_simple_raster():
@@ -15,9 +25,7 @@ def test_simple_raster():
     io_pool = mp.pool.ThreadPool(1)
     footprint = buzz.Footprint(tl=(0, 0), size=(10, 10), rsize=(10, 10))
 
-    hej = []
-    def hejj(s, r):
-        hej.append(s)
+    obs = RasterStateOberver()
 
     def compute_data(fp, *args):
         return np.zeros(fp.shape)
@@ -27,13 +35,13 @@ def test_simple_raster():
         computation_function=compute_data,
         computation_pool=computation_pool,
         io_pool=io_pool,
-        debug_callback=hejj
+        debug_callback=obs.callback
     )
 
     array = simple_raster.get_data(footprint)
 
     assert np.all(array == 0)
-    # print(hej)
+    print(obs.df)
 
 
 def test_complicated_raster_dependencies():
@@ -138,9 +146,7 @@ def test_simple_cached():
     io_pool = mp.pool.ThreadPool(1)
     footprint = buzz.Footprint(tl=(0, 0), size=(10, 10), rsize=(10, 10))
 
-    hej = []
-    def hejj(s, r):
-        hej.append(s)
+    obs = RasterStateOberver()
 
     def compute_data(fp, *args):
         return np.zeros(fp.shape)
@@ -154,7 +160,7 @@ def test_simple_cached():
         cache_dir='./test_cache/',
         cache_fps=footprint.tile_count(3, 3, boundary_effect='shrink'),
         overwrite=True,
-        debug_callback=hejj,
+        debug_callback=obs.callback,
     )
 
     array = simple_raster.get_data(footprint)
@@ -335,9 +341,9 @@ def test_complicated_cached_dependencies():
 
 
 if __name__ == '__main__':
-    # test_simple_raster()
+    test_simple_raster()
     # test_complicated_raster_dependencies()
 
     # test_simple_cached()
     # test_concurrent_cached()
-    test_complicated_cached_dependencies()
+    # test_complicated_cached_dependencies()
