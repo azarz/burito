@@ -1179,7 +1179,7 @@ class BackendCachedRaster(BackendRaster):
         """
         # print(self.h, "writing ")
         sr = self.wkt_origin
-        filepath = os.path.join(self.cache_dir, str(uuid.uuid4()))
+        filepath = os.path.join(self._cache_dir, str(uuid.uuid4()))
 
         dr = gdal.GetDriverByName("GTiff")
         if os.path.isfile(filepath):
