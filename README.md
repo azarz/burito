@@ -1,4 +1,4 @@
-# BuRITo, Buzzard's Raster Inception Tool
+# BuRITo, Buzzard's Raster Inception Tool (name subject to change)
 
 ## Vocabulary:
 For a given request to a raster:
