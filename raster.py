@@ -581,29 +581,33 @@ class BackendRaster(object):
                 # If there are still fps to check
                 if query.to_check:
                     assert isinstance(self, BackendCachedRaster)
-                    to_check_fp = query.to_check.pop(0)
+                    to_check_fp = query.to_check[0]
                     index = self._indices_of_cache_tiles[to_check_fp]
 
                     if self._cache_checksum_array[index] is None and thread_pool_task_counter[id(self._io_pool)] < self._io_pool._processes:
-                        print(self.h, qrinfo(query), f'checking a cache footprint')
-                        query.checking.append((index, self._io_pool.apply_async(self._check_cache_file, (to_check_fp, ))))
-                        thread_pool_task_counter[id(self._io_pool)] += 1
+                        with self._debug_watcher("scheduler::starting_check_fp"):
+                            to_check_fp = query.to_check.pop(0)
+                            index = self._indices_of_cache_tiles[to_check_fp]
+                            print(self.h, qrinfo(query), f'checking a cache footprint')
+                            query.checking.append((index, self._io_pool.apply_async(self._check_cache_file, (to_check_fp, ))))
+                            thread_pool_task_counter[id(self._io_pool)] += 1
 
-                        skip = True
-                        break
+                            skip = True
+                            break
 
                 # If there are still fps currently being checked
                 if query.checking:
                     assert isinstance(self, BackendCachedRaster)
                     for still_checking in query.checking:
                         if still_checking[1].ready():
-                            print(self.h, qrinfo(query), f'checked a cache footprint')
-                            self._cache_checksum_array[still_checking[0]] = still_checking[1].get()
-                            thread_pool_task_counter[id(self._io_pool)] -= 1
-                            query.checking.remove(still_checking)
+                            with self._debug_watcher("scheduler::ending_check_fp"):
+                                print(self.h, qrinfo(query), f'checked a cache footprint')
+                                self._cache_checksum_array[still_checking[0]] = still_checking[1].get()
+                                thread_pool_task_counter[id(self._io_pool)] -= 1
+                                query.checking.remove(still_checking)
 
-                            skip = True
-                            break
+                                skip = True
+                                break
 
                 # If there are still fps to check or currently being checked, skipping query
                 if query.to_check or query.checking:
@@ -611,11 +615,12 @@ class BackendRaster(object):
                     continue
 
                 if not query.was_included_in_graph:
-                    self._update_graph_from_query(query)
-                    query.was_included_in_graph = True
-                    print(self.h, qrinfo(query), f'new query with {list(len(p) for p in query.to_collect.values())} to_collect was added to graph')
-                    skip = True
-                    break
+                    with self._debug_watcher("scheduler::updating_graph"):
+                        self._update_graph_from_query(query)
+                        query.was_included_in_graph = True
+                        print(self.h, qrinfo(query), f'new query with {list(len(p) for p in query.to_collect.values())} to_collect was added to graph')
+                        skip = True
+                        break
 
                 isolates_not_query = [
                     node_id for node_id in list(nx.isolates(self._graph))
