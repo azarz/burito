@@ -176,7 +176,8 @@ class Raster(object):
         if footprint is None:
             raise ValueError("footprint must be provided")
         if cached:
-            assert cache_dir != None
+            if cache_dir is None:
+                raise ValueError("cache_dir must be provided when cached")
             backend_raster = BackendCachedRaster(footprint,
                                                  dtype,
                                                  nbands,
@@ -1178,7 +1179,7 @@ class BackendCachedRaster(BackendRaster):
         """
         # print(self.h, "writing ")
         sr = self.wkt_origin
-        filepath = str(uuid.uuid4())
+        filepath = os.path.join(self.cache_dir, str(uuid.uuid4()))
 
         dr = gdal.GetDriverByName("GTiff")
         if os.path.isfile(filepath):
