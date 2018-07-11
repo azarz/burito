@@ -551,17 +551,6 @@ class BackendRaster(object):
                 if skip:
                     break
 
-                # If all to_produced was consumed: query ended
-                if not query.to_produce:
-                    with self._debug_watcher("scheduler::cleaning_ended_query"):
-                        print(self.h, qrinfo(query), f'cleaning: treated all produce')
-                        del self._num_pending[id(query)]
-                        self._graph.remove_node(id(query))
-                        self._queries.remove(query)
-
-                        skip = True
-                        break
-
                 # If the query has been dropped
                 if query.produced() is None:
                     with self._debug_watcher("scheduler::cleaning_dropped_query"):
@@ -618,6 +607,17 @@ class BackendRaster(object):
                         self._update_graph_from_query(query)
                         query.was_included_in_graph = True
                         print(self.h, qrinfo(query), f'new query with {list(len(p) for p in query.to_collect.values())} to_collect was added to graph')
+                        skip = True
+                        break
+
+                # If all to_produced was consumed: query ended
+                if not query.to_produce:
+                    with self._debug_watcher("scheduler::cleaning_ended_query"):
+                        print(self.h, qrinfo(query), f'cleaning: treated all produce')
+                        del self._num_pending[id(query)]
+                        self._graph.remove_node(id(query))
+                        self._queries.remove(query)
+
                         skip = True
                         break
 
