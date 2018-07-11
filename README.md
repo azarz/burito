@@ -35,3 +35,7 @@ For a given request to a raster:
 - Limited RAM usage
 	+ see split computations above
 	+ use disk caching
+
+## Graph example:
+
+![doc/dependency_graph.png](doc/dependency_graph.png "Dependency graph")
