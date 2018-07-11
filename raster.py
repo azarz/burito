@@ -786,7 +786,10 @@ class BackendRaster(object):
                                         in_edge = in_edges[0]
                                         produce_node = self._graph.nodes[in_edge[0]]
                                         if produce_node["in_data"] is None:
-                                            produce_node["in_data"] = np.zeros(tuple(produce_node["footprint"].shape) + (len(query.bands),))
+                                            produce_node["in_data"] = np.full(
+                                                tuple(produce_node["footprint"].shape) + (len(query.bands),),
+                                                self.nodata or 0, dtype=self.dtype
+                                            )
                                         node["future"] = self._io_pool.apply_async(
                                             self._read_cache_data,
                                             (
@@ -1152,15 +1155,18 @@ class BackendCachedRaster(BackendRaster):
         assert rtlx >= 0 and rtlx < cache_tile.rsizex
         assert rtly >= 0 and rtly < cache_tile.rsizey
 
-        for i in bands:
-            a = gdal_ds.GetRasterBand(i).ReadAsArray(
-                int(rtlx), int(rtly), int(to_read_fp.rsizex), int(to_read_fp.rsizey), buf_obj=produced_data[..., i - 1]
+        for band in bands:
+            a = gdal_ds.GetRasterBand(band).ReadAsArray(
+                int(rtlx),
+                int(rtly),
+                int(to_read_fp.rsizex),
+                int(to_read_fp.rsizey),
+                buf_obj=produced_data[to_read_fp.slice_in(produce_fp, clip=True) + (band - 1, )]
             )
             if a is None:
                 raise ValueError('Could not read array (gdal error: `{}`)'.format(
                     gdal.GetLastErrorMsg()
                 ))
-
 
 
     def _write_cache_data(self, cache_tile, data):
