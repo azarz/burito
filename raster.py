@@ -415,7 +415,11 @@ class BackendRaster(object):
             """
             Default merge function: burning
             """
-            out_data = np.zeros(tuple(out_fp.shape) + (self._num_bands,))
+            out_data = np.full(
+                tuple(out_fp.shape) + (self._num_bands,),
+                self.nodata or 0,
+                dtype=self.dtype
+            )
             for to_burn_fp, to_burn_data in zip(in_fps, in_arrays):
                 out_data[to_burn_fp.slice_in(out_fp, clip=True)] = to_burn_data[out_fp.slice_in(to_burn_fp, clip=True)]
             return out_data
@@ -792,7 +796,8 @@ class BackendRaster(object):
                                         if produce_node["in_data"] is None:
                                             produce_node["in_data"] = np.full(
                                                 tuple(produce_node["footprint"].shape) + (len(query.bands),),
-                                                self.nodata or 0, dtype=self.dtype
+                                                self.nodata or 0,
+                                                dtype=self.dtype
                                             )
                                         node["future"] = self._io_pool.apply_async(
                                             self._read_cache_data,
@@ -1027,7 +1032,7 @@ class BackendCachedRaster(BackendRaster):
         if cache_dir is not None:
             os.makedirs(cache_dir, exist_ok=True)
             if overwrite:
-                for path in glob.glob(cache_dir + "/*_0x*.tif"):
+                for path in glob.glob(cache_dir + "/*_[a-f0-9]*.tif"):
                     os.remove(path)
 
         if computation_tiles is None:
@@ -1122,7 +1127,7 @@ class BackendCachedRaster(BackendRaster):
         Returns a string, which is a path to a cache tile from its fp
         """
         prefix = self._get_cache_tile_path_prefix(cache_tile)
-        files_paths = glob.glob(prefix + "_*.tif")
+        files_paths = glob.glob(prefix + "*_[a-f0-9]*.tif")
         return files_paths
 
 
