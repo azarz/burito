@@ -14,9 +14,20 @@ from burito.raster import Raster
 class RasterStateOberver():
     def __init__(self):
         self.df = pd.DataFrame()
+        self.num_queries = 0
 
     def callback(self, string, raster, **kwargs):
-        self.df = self.df.append(dict(zip(['op_tag', 'queries'], [string, raster._queries])), ignore_index=True)
+        if string == "scheduler::new_query::before":
+            self.num_queries = len(raster._queries)
+        if string == "scheduler::new_query::after":
+            assert len(raster._queries) - self.num_queries == 1
+
+        if string == "scheduler::cleaning_ended_query::before":
+            self.num_queries = len(raster._queries)
+        if string == "scheduler::cleaning_ended_query::after":
+            assert self.num_queries - len(raster._queries) == 1
+
+        self.df = self.df.append(dict(zip(['op_tag', 'queries'], [string, len(raster._queries)])), ignore_index=True)
 
 
 
