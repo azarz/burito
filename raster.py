@@ -561,12 +561,13 @@ class BackendRaster(object):
                         print(self.h, qrinfo(query), f'cleaning: dropped by main program')
                         if self._num_pending[id(query)]: # could be false because dropped too early
                             del self._num_pending[id(query)]
-                        to_delete_nodes = list(nx.dfs_postorder_nodes(self._graph, source=id(query)))
-                        for node_id in to_delete_nodes:
-                            node = self._graph.nodes[node_id]
-                            node["linked_queries"].remove(query)
-                            if not node["linked_queries"]:
-                                self._graph.remove_node(node_id)
+                        if query.was_included_in_graph:
+                            to_delete_nodes = list(nx.dfs_postorder_nodes(self._graph, source=id(query)))
+                            for node_id in to_delete_nodes:
+                                node = self._graph.nodes[node_id]
+                                node["linked_queries"].remove(query)
+                                if not node["linked_queries"]:
+                                    self._graph.remove_node(node_id)
                         self._queries.remove(query)
 
                         skip = True

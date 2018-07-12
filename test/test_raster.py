@@ -350,9 +350,9 @@ def test_complicated_cached_dependencies():
 
 
 if __name__ == '__main__':
-    # test_simple_raster()
-    # test_complicated_raster_dependencies()
+    test_simple_raster()
+    test_complicated_raster_dependencies()
 
-    # test_simple_cached()
+    test_simple_cached()
     test_concurrent_cached()
-    # test_complicated_cached_dependencies()
+    test_complicated_cached_dependencies()

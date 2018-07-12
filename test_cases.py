@@ -108,10 +108,10 @@ def main():
 
     print(tile_count)
 
-    for array, fp in zip(dot_raster.get_multi_data(tiles.flat[0:3]), tiles.flat[0:3]):
-        plt.imshow(array)
-        plt.show()
-        gc.collect()
+    # for array, fp in zip(dot_raster.get_multi_data(tiles.flat[0:3]), tiles.flat[0:3]):
+    #     plt.imshow(array)
+    #     plt.show()
+    #     gc.collect()
 
     random_raster.get_multi_data(tiles.flat)
     time.sleep(1)
