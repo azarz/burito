@@ -16,7 +16,7 @@ class RasterStateOberver():
         self.df = pd.DataFrame()
 
     def callback(self, string, raster, **kwargs):
-        self.df = self.df.append(dict(zip(['op_tag', 'nbands'], [string, raster.nbands])), ignore_index=True)
+        self.df = self.df.append(dict(zip(['op_tag', 'queries'], [string, raster._queries])), ignore_index=True)
 
 
 
@@ -166,7 +166,6 @@ def test_simple_cached():
     array = simple_raster.get_data(footprint)
 
     assert np.all(array == 0)
-    # print(hej)
 
 
 
@@ -174,6 +173,10 @@ def test_concurrent_cached():
     computation_pool = mp.pool.ThreadPool(1)
     io_pool = mp.pool.ThreadPool(1)
     footprint = buzz.Footprint(tl=(0, 0), size=(10, 10), rsize=(10, 10))
+
+    obs0 = RasterStateOberver()
+    obs1 = RasterStateOberver()
+    obs2 = RasterStateOberver()
 
 
 
@@ -188,7 +191,8 @@ def test_concurrent_cached():
         cached=True,
         cache_dir='./test_cache/0/',
         cache_fps=footprint.tile_count(3, 3, boundary_effect='shrink'),
-        overwrite=True
+        overwrite=True,
+        debug_callback=obs0.callback
     )
 
     dependent_raster_1 = Raster(
@@ -201,7 +205,8 @@ def test_concurrent_cached():
         cached=True,
         cache_dir='./test_cache/1/',
         cache_fps=footprint.tile_count(3, 3, boundary_effect='shrink'),
-        overwrite=True
+        overwrite=True,
+        debug_callback=obs1.callback
     )
 
     dependent_raster_2 = Raster(
@@ -214,14 +219,18 @@ def test_concurrent_cached():
         cached=True,
         cache_dir='./test_cache/2/',
         cache_fps=footprint.tile_count(3, 3, boundary_effect='shrink'),
-        overwrite=True
+        overwrite=True,
+        debug_callback=obs2.callback
     )
 
-    arrays1 = dependent_raster_1.get_multi_data(footprint.tile_count(5, 5).flat)
-    arrays2 = dependent_raster_2.get_multi_data(reversed(list(footprint.tile_count(5, 5).flat)))
+    arrays1 = list(dependent_raster_1.get_multi_data(footprint.tile_count(5, 5).flat))
+    arrays2 = list(dependent_raster_2.get_multi_data(reversed(list(footprint.tile_count(5, 5).flat))))
 
-    assert np.all(next(arrays1) == 0)
-    assert np.all(next(arrays2) == 0)
+    assert np.all(arrays1[0] == 0)
+    assert np.all(arrays2[0] == 0)
+    print("base", obs0.df)
+    print("1", obs1.df)
+    print("2", obs2.df)
 
 
 def test_complicated_cached_dependencies():
@@ -341,9 +350,9 @@ def test_complicated_cached_dependencies():
 
 
 if __name__ == '__main__':
-    test_simple_raster()
+    # test_simple_raster()
     # test_complicated_raster_dependencies()
 
     # test_simple_cached()
-    # test_concurrent_cached()
+    test_concurrent_cached()
     # test_complicated_cached_dependencies()
