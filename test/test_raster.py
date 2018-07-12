@@ -27,6 +27,8 @@ class RasterStateOberver():
         if string == "scheduler::cleaning_ended_query::after":
             assert self.num_queries - len(raster._queries) == 1
 
+
+
         self.df = self.df.append(dict(zip(['op_tag', 'queries'], [string, len(raster._queries)])), ignore_index=True)
 
 
@@ -46,7 +48,7 @@ def test_simple_raster():
         computation_function=compute_data,
         computation_pool=computation_pool,
         io_pool=io_pool,
-        debug_callback=obs.callback
+        debug_callbacks=[obs.callback]
     )
 
     array = simple_raster.get_data(footprint)
@@ -171,7 +173,7 @@ def test_simple_cached():
         cache_dir='./test_cache/',
         cache_fps=footprint.tile_count(3, 3, boundary_effect='shrink'),
         overwrite=True,
-        debug_callback=obs.callback,
+        debug_callbacks=[obs.callback,]
     )
 
     array = simple_raster.get_data(footprint)
@@ -203,7 +205,7 @@ def test_concurrent_cached():
         cache_dir='./test_cache/0/',
         cache_fps=footprint.tile_count(3, 3, boundary_effect='shrink'),
         overwrite=True,
-        debug_callback=obs0.callback
+        debug_callbacks=[obs0.callback]
     )
 
     dependent_raster_1 = Raster(
@@ -217,7 +219,7 @@ def test_concurrent_cached():
         cache_dir='./test_cache/1/',
         cache_fps=footprint.tile_count(3, 3, boundary_effect='shrink'),
         overwrite=True,
-        debug_callback=obs1.callback
+        debug_callbacks=[obs1.callback]
     )
 
     dependent_raster_2 = Raster(
@@ -231,7 +233,7 @@ def test_concurrent_cached():
         cache_dir='./test_cache/2/',
         cache_fps=footprint.tile_count(3, 3, boundary_effect='shrink'),
         overwrite=True,
-        debug_callback=obs2.callback
+        debug_callbacks=[obs2.callback]
     )
 
     arrays1 = list(dependent_raster_1.get_multi_data(footprint.tile_count(5, 5).flat))

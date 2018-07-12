@@ -41,8 +41,8 @@ _debug_lock = threading.RLock()
 
 
 class DebugCtxMngmnt(object):
-    def __init__(self, function, raster):
-        self._function = function
+    def __init__(self, functions, raster):
+        self._functions = functions
         self.raster = raster
 
     def __call__(self, string, **kwargs):
@@ -51,12 +51,14 @@ class DebugCtxMngmnt(object):
         return self
 
     def __enter__(self):
-        if self._function is not None:
-            self._function(self.string + "::before", self.raster, **self.kwargs)
+        if self._functions is not None:
+            for function in self._functions:
+                function(self.string + "::before", self.raster, **self.kwargs)
 
     def __exit__(self, _, __, ___):
-        if self._function is not None:
-            self._function(self.string + "::after", self.raster, **self.kwargs)
+        if self._functions is not None:
+            for function in self._functions:
+                function(self.string + "::after", self.raster, **self.kwargs)
 
 
 
@@ -169,7 +171,7 @@ class Raster(object):
                  computation_fps=None,
                  merge_pool=None,
                  merge_function=None,
-                 debug_callback=None):
+                 debug_callbacks=None):
         """
         creates a raster from arguments
         """
@@ -194,7 +196,7 @@ class Raster(object):
                                                  computation_fps,
                                                  merge_pool,
                                                  merge_function,
-                                                 debug_callback
+                                                 debug_callbacks
                                                 )
         else:
             backend_raster = BackendRaster(footprint,
@@ -210,7 +212,7 @@ class Raster(object):
                                            max_computation_size,
                                            merge_pool,
                                            merge_function,
-                                           debug_callback
+                                           debug_callbacks
                                           )
 
         self._backend = backend_raster
@@ -356,9 +358,9 @@ class BackendRaster(object):
                  max_computation_size,
                  merge_pool,
                  merge_function,
-                 debug_callback):
+                 debug_callbacks):
 
-        self._debug_watcher = DebugCtxMngmnt(debug_callback, self)
+        self._debug_watcher = DebugCtxMngmnt(debug_callbacks, self)
 
         self._full_fp = footprint
         if computation_function is None:
@@ -1013,7 +1015,7 @@ class BackendCachedRaster(BackendRaster):
                  computation_tiles,
                  merge_pool,
                  merge_function,
-                 debug_callback):
+                 debug_callbacks):
 
 
         self._cache_dir = cache_dir
@@ -1092,7 +1094,7 @@ class BackendCachedRaster(BackendRaster):
                          max_computation_size=None,
                          merge_pool=merge_pool,
                          merge_function=merge_function,
-                         debug_callback=debug_callback
+                         debug_callbacks=debug_callbacks
                         )
 
 
