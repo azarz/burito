@@ -186,7 +186,7 @@ class Raster(object):
                                                  computation_function,
                                                  overwrite,
                                                  cache_dir,
-                                                 cache_fps,
+                                                 np.asarray(cache_fps),
                                                  io_pool,
                                                  computation_pool,
                                                  primitives,
@@ -1060,6 +1060,9 @@ class BackendCachedRaster(BackendRaster):
         for i, fp in enumerate(cache_fps):
             self._cache_idx.insert(i, fp.bounds + bound_inset)
 
+        # self._cache_priority_dict = {fp: index for index, fp in enumerate(sorted(cache_fps, key=lambda fp: (-fp.tly, fp.tlx)))}
+        # self._priority_to_cache_fp_dict = {index: fp for index, fp in enumerate(sorted(cache_fps, key=lambda fp: (-fp.tly, fp.tlx)))}
+
         self._computation_tiles = computation_tiles
 
         self._computation_idx = rtree.index.Index()
@@ -1075,6 +1078,9 @@ class BackendCachedRaster(BackendRaster):
 
         for i, fp in enumerate(computation_fps):
             self._computation_idx.insert(i, fp.bounds + bound_inset)
+
+        # self._compute_priority_dict = {fp: index for index, fp in enumerate(sorted(computation_fps, key=lambda fp: (-fp.tly, fp.tlx)))}
+        # self._priority_to_compute_fp_dict = {index: fp for index, fp in enumerate(sorted(computation_fps, key=lambda fp: (-fp.tly, fp.tlx)))}
 
 
         super().__init__(footprint, dtype, nbands, nodata, srs,
@@ -1257,9 +1263,6 @@ class BackendCachedRaster(BackendRaster):
 
         os.rename(filepath, new_file_path)
 
-
-
-        
 
 
     def _update_graph_from_query(self, new_query):
