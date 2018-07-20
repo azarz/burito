@@ -103,6 +103,7 @@ qryids = collections.defaultdict(lambda: f'{len(qryids):02d}')
 global queids
 queids = collections.defaultdict(lambda: f'{len(queids):02d}')
 
+
 def get_uname():
     def int_to_roman(input):
         """ Convert an integer to a Roman numeral. """
